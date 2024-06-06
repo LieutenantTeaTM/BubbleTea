@@ -132,7 +132,7 @@ fn lexer<'src>(
 
 
     // A parser for operators
-    let op = one_of("+*-/!:|")
+    let op = one_of("+*-/><!:|")
         .repeated()
         .at_least(1)
         .to_slice()
@@ -241,6 +241,10 @@ enum BinaryOp {
     Sub,
     Mul,
     Div,
+    GreaterThan,
+    LessThan,
+    GreaterEq,
+    LessEq,
     Eq,
     NotEq,
 }
@@ -454,13 +458,32 @@ fn expr_parser<'tokens, 'src: 'tokens>() -> impl Parser<
                     (Expr::Binary(Box::new(a), op, Box::new(b)), e.span())
                 });
 
+            // Greater than/Less than
+            let op = just(Token::Op(">"))
+            .to(BinaryOp::GreaterThan)
+            .or(just(Token::Op("<")).to(BinaryOp::LessThan));
+            let gt_or_lt = sum
+                .clone()
+                .foldl_with(op.then(sum).repeated(), |a, (op, b), e| {
+                    (Expr::Binary(Box::new(a), op, Box::new(b)), e.span())
+                });
+
+            let op = just(Token::Op(">:"))
+                .to(BinaryOp::GreaterEq)
+                .or(just(Token::Op("<:")).to(BinaryOp::LessEq));
+            let ge_or_le = gt_or_lt
+                    .clone()
+                    .foldl_with(op.then(gt_or_lt).repeated(), |a, (op, b), e| {
+                        (Expr::Binary(Box::new(a), op, Box::new(b)), e.span())
+                    });
+
             // Comparison ops (equal, not-equal) have equal precedence
             let op = just(Token::Op("::"))
                 .to(BinaryOp::Eq)
                 .or(just(Token::Op("!:")).to(BinaryOp::NotEq));
-            let compare = sum
+            let compare = ge_or_le
                 .clone()
-                .foldl_with(op.then(sum).repeated(), |a, (op, b), e| {
+                .foldl_with(op.then(ge_or_le).repeated(), |a, (op, b), e| {
                     (Expr::Binary(Box::new(a), op, Box::new(b)), e.span())
                 });
 
@@ -701,10 +724,9 @@ fn eval_expr<'src>(
         }
         Expr::Assign(local, val, body) => {
             let new_val = eval_expr(val, funcs, stack)?;
-            if let Some(var) = stack.iter_mut().rev().find(|(l, _)| l == local) {
-                var.1 = new_val.clone();
+            if let Some(_var) = stack.iter_mut().rev().find(|(l, _)| l == local) {
+                stack.push((local, new_val));
                 let res = eval_expr(body, funcs, stack)?;
-                stack.pop();
                 res
             } else {
                 return Err(Error {
@@ -721,7 +743,6 @@ fn eval_expr<'src>(
             let val1: Value<'_> = eval_expr(a, funcs, stack)?;
             let val2: Value<'_> = eval_expr(b, funcs, stack)?;
             let val: String = val1.to_string() + &val2.to_string();
-            //let v: &'src String = &val.to_owned();
             val.leak()
         }),
         Expr::Binary(a, BinaryOp::Add, b) => Value::Num(
@@ -736,6 +757,18 @@ fn eval_expr<'src>(
         Expr::Binary(a, BinaryOp::Div, b) => Value::Num(
             eval_expr(a, funcs, stack)?.num(a.1)? / eval_expr(b, funcs, stack)?.num(b.1)?,
         ),
+        Expr::Binary(a, BinaryOp::GreaterThan, b) => {
+            Value::Bool(eval_expr(a, funcs, stack)?.num(a.1)? > eval_expr(b, funcs, stack)?.num(b.1)?)
+        }
+        Expr::Binary(a, BinaryOp::LessThan, b) => {
+            Value::Bool(eval_expr(a, funcs, stack)?.num(a.1)? < eval_expr(b, funcs, stack)?.num(b.1)?)
+        }
+        Expr::Binary(a, BinaryOp::GreaterEq, b) => {
+            Value::Bool(eval_expr(a, funcs, stack)?.num(a.1)? >= eval_expr(b, funcs, stack)?.num(b.1)?)
+        }
+        Expr::Binary(a, BinaryOp::LessEq, b) => {
+            Value::Bool(eval_expr(a, funcs, stack)?.num(a.1)? <= eval_expr(b, funcs, stack)?.num(b.1)?)
+        }
         Expr::Binary(a, BinaryOp::Eq, b) => {
             Value::Bool(eval_expr(a, funcs, stack)? == eval_expr(b, funcs, stack)?)
         }
@@ -856,6 +889,7 @@ fn eval_expr<'src>(
         Expr::WhileLoop(cond, body) => {
             loop {
                 let condition_val = eval_expr(cond, funcs, stack)?;
+                //println!("{:?}", condition_val);
                 if let Value::Bool(true) = condition_val {
                     if let Value::Break = eval_expr(body, funcs, stack)? {
                         return Ok(Value::Break);
