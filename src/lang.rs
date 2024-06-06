@@ -47,10 +47,22 @@ pub enum Token<'src> {
 
     // Equivalent to rust's let, "v", short for var.
     Let,
+
+    Assign,
+
+    DefStr,
+
+    DefNum,
+
+    Len,
     
     // Another staple of BubbleTea, "p" short for print. Prints whatever value as you'd expect
     // declared like p(value);
     Print,
+
+    PrintLine,
+
+    InputBuf,
 
     // Simple if
     If,
@@ -61,6 +73,8 @@ pub enum Token<'src> {
     For,
 
     In,
+
+    //Idx,
 
     While,
 
@@ -81,7 +95,14 @@ impl<'src> fmt::Display for Token<'src> {
             Token::Ident(s) => write!(f, "{}", s),
             Token::Fn => write!(f, "fn"),
             Token::Let => write!(f, "v"),
+            Token::Assign => write!(f, "vup"),
+            Token::DefStr => write!(f, "str"),
+            Token::DefNum => write!(f, "num"),
+            //Token::Idx => write!(f, "idx"),
+            Token::Len => write!(f, "len"),
             Token::Print => write!(f, "p"),
+            Token::PrintLine => write!(f, "pln"),
+            Token::InputBuf => write!(f, "inp"),
             Token::For => write!(f, "for"),
             Token::In => write!(f, "in"),
             Token::If => write!(f, "if"),
@@ -124,7 +145,14 @@ fn lexer<'src>(
     let ident = text::ascii::ident().map(|ident: &str| match ident {
         "fn" => Token::Fn,
         "v" => Token::Let,
+        "vup" => Token::Assign,
+        "str" => Token::DefStr,
+        //"idx" => Token::Idx,
+        "num" => Token::DefNum,
+        "len" => Token::Len,
         "p" => Token::Print,
+        "pln" => Token::PrintLine,
+        "inp" => Token::InputBuf,
         "if" => Token::If,
         "for" => Token::For,
         "while" => Token::While,
@@ -227,11 +255,18 @@ enum Expr<'src> {
     List(Vec<Spanned<Self>>),
     Local(&'src str),
     Let(&'src str, Box<Spanned<Self>>, Box<Spanned<Self>>),
+    Assign(&'src str, Box<Spanned<Self>>, Box<Spanned<Self>>),
+    DefStr(Box<Spanned<Self>>),
+    DefNum(Box<Spanned<Self>>),
+    //Idx(&'src str, Box<Spanned<Self>>, Box<Spanned<Self>>),
+    Len(Box<Spanned<Self>>),
+    InputBuf(Box<Spanned<Self>>),
     Then(Box<Spanned<Self>>, Box<Spanned<Self>>),
     Binary(Box<Spanned<Self>>, BinaryOp, Box<Spanned<Self>>),
     Call(Box<Spanned<Self>>, Spanned<Vec<Spanned<Self>>>),
     If(Box<Spanned<Self>>, Box<Spanned<Self>>, Box<Spanned<Self>>),
     Print(Box<Spanned<Self>>),
+    PrintLine(Box<Spanned<Self>>),
     ForLoop(&'src str, Box<Spanned<Self>>, Box<Spanned<Self>>),
     WhileLoop(Box<Spanned<Self>>, Box<Spanned<Self>>),
     Break
@@ -280,11 +315,19 @@ fn expr_parser<'tokens, 'src: 'tokens>() -> impl Parser<
             let let_ = just(Token::Let)
                 .ignore_then(ident)
                 .then_ignore(just(Token::Op(":")))
-                .then(inline_expr)
+                .then(inline_expr.clone())
                 .then_ignore(just(Token::Ctrl(';')))
                 .then(expr.clone())
                 .map(|((name, val), body)| Expr::Let(name, Box::new(val), Box::new(body)));
-            
+
+            let assign = just(Token::Assign)
+                .ignore_then(ident)
+                .then_ignore(just(Token::Op(":")))
+                .then(inline_expr.clone())
+                .then_ignore(just(Token::Ctrl(';')))
+                .then(expr.clone())
+                .map(|((name, val), body)| Expr::Assign(name, Box::new(val), Box::new(body)));
+
             let break_ = just(Token::Break)
                 .then_ignore(just(Token::Ctrl(';')))
                 .then(expr.clone())
@@ -299,14 +342,52 @@ fn expr_parser<'tokens, 'src: 'tokens>() -> impl Parser<
             let atom = val
                 .or(ident.map(Expr::Local))
                 .or(let_)
+                .or(assign)
                 .or(break_)
                 .or(list)
-                .or(just(Token::Print)
+                .or(just(Token::DefStr)
                     .ignore_then(
                         expr.clone()
                             .delimited_by(just(Token::Ctrl('(')), just(Token::Ctrl(')'))),
                     )
+                .map(|expr| Expr::DefStr(Box::new(expr))))
+                /*.or(just(Token::Idx)
+                    .ignore_then(ident
+                        .then(inline_expr.clone())
+                        .then_ignore(just(Token::Ctrl(',')))
+                        .then(expr.clone()))
+                        .delimited_by(just(Token::Ctrl('(')), just(Token::Ctrl(')')))
+                    .map(|((name, val), body)| Expr::Idx(name, Box::new(val), Box::new(body))))*/
+                .or(just(Token::DefNum)
+                    .ignore_then(
+                        expr.clone()
+                            .delimited_by(just(Token::Ctrl('(')), just(Token::Ctrl(')'))),
+                    )
+                .map(|expr| Expr::DefNum(Box::new(expr))))
+                .or(just(Token::Len)
+                    .ignore_then(
+                        expr.clone()
+                            .delimited_by(just(Token::Ctrl('(')), just(Token::Ctrl(')'))),
+                    )
+                .map(|expr| Expr::Len(Box::new(expr))))
+                .or(just(Token::Print)
+                    .ignore_then(
+                        expr.clone()
+                            .delimited_by(just(Token::Ctrl('(')), just(Token::Ctrl(')')))
+                    )
                     .map(|expr| Expr::Print(Box::new(expr))))
+                .or(just(Token::PrintLine)
+                    .ignore_then(
+                        expr.clone()
+                            .delimited_by(just(Token::Ctrl('(')), just(Token::Ctrl(')')))
+                    )
+                    .map(|expr| Expr::PrintLine(Box::new(expr))))
+                .or(just(Token::InputBuf)
+                    .ignore_then(
+                        expr.clone()
+                            .delimited_by(just(Token::Ctrl('(')), just(Token::Ctrl(')')))
+                    )
+                    .map(|expr| Expr::InputBuf(Box::new(expr))))
                 .map_with(|expr, e| (expr, e.span()))
                 // Atoms can also just be normal expressions, but surrounded with parentheses
                 .or(expr
@@ -393,10 +474,10 @@ fn expr_parser<'tokens, 'src: 'tokens>() -> impl Parser<
             // Attempt to recover anything that looks like a block but contains errors
             .recover_with(via_parser(nested_delimiters(
                 Token::Ctrl('{'),
-                Token::Ctrl('}'),
+                Token::Ctrl(';'),
                 [
-                    (Token::Ctrl('('), Token::Ctrl(')')),
-                    (Token::Ctrl('['), Token::Ctrl(']')),
+                    (Token::Ctrl('('), Token::Ctrl(';')),
+                    (Token::Ctrl('['), Token::Ctrl(';')),
                 ],
                 |span| (Expr::Error, span),
             )));
@@ -581,6 +662,11 @@ fn char_to_str_converter<'src>(c: char) -> &'src str {
     Box::leak(s.into_boxed_str())
 }
 
+fn string_to_str_converter<'src>(c: String) -> &'src str {
+    let s: String = c.to_string();
+    Box::leak(s.into_boxed_str())
+}
+
 // Evaluate gathered expressions
 fn eval_expr<'src>(
     expr: &Spanned<Expr<'src>>,
@@ -612,6 +698,20 @@ fn eval_expr<'src>(
             let res = eval_expr(body, funcs, stack)?;
             stack.pop();
             res
+        }
+        Expr::Assign(local, val, body) => {
+            let new_val = eval_expr(val, funcs, stack)?;
+            if let Some(var) = stack.iter_mut().rev().find(|(l, _)| l == local) {
+                var.1 = new_val.clone();
+                let res = eval_expr(body, funcs, stack)?;
+                stack.pop();
+                res
+            } else {
+                return Err(Error {
+                    span: expr.1, // Update span handling as needed
+                    msg: format!("No such variable '{}' in scope", local),
+                });
+            }
         }
         Expr::Then(a, b) => {
             eval_expr(a, funcs, stack)?;
@@ -685,9 +785,69 @@ fn eval_expr<'src>(
         }
         Expr::Print(a) => {
             let val = eval_expr(a, funcs, stack)?;
+            print!("{}", val);
+            val
+        },
+        Expr::PrintLine(a) => {
+            let val = eval_expr(a, funcs, stack)?;
             println!("{}", val);
             val
-        }
+        },
+        Expr::InputBuf(a) => Value::Str({
+            let val = eval_expr(a, funcs, stack)?;
+            println!("{}", val);
+            let mut line = String::new();
+            let _b1 = std::io::stdin().read_line(&mut line).unwrap();
+            line.leak().trim()
+        }),
+        Expr::DefStr(a) => Value::Str({
+            let val = eval_expr(a, funcs, stack)?.to_string();
+            val.leak()
+        }),
+
+        Expr::DefNum(a) => Value::Num({
+            let c = eval_expr(a, funcs, stack)?;
+            if let Value::Num(s) = c {
+                s
+            } else if let Value::Str(s) = c {
+                if s.to_string().parse::<f64>().is_ok() {
+                    let f: f64 = s.parse().unwrap();
+                    f
+                }
+                else {
+                    return Err(Error {
+                        span: a.1.clone(),
+                        msg: format!("Value must be numeric"),
+                    });
+                }
+            }
+            else {
+                return Err(Error {
+                    span: a.1.clone(),
+                    msg: format!("Value must be numeric"),
+                });
+            }
+        }),
+
+        Expr::Len(a) => Value::Num({
+            let c = eval_expr(a, funcs, stack)?;
+            if let Value::Num(_n) = c {
+                return Err(Error {
+                    span: a.1.clone(),
+                    msg: format!("Cannot find len() of numeric"),
+                });
+            } else if let Value::Str(s) = c {
+                s.to_string().len() as f64
+            } else if let Value::List(s) = c {
+                s.len() as f64
+            }
+            else {
+                return Err(Error {
+                    span: a.1.clone(),
+                    msg: format!("Invalid value in len()"),
+                });
+            }
+        }),
 
         Expr::Break =>  {
             return Ok(Value::Break);
@@ -736,6 +896,16 @@ fn eval_expr<'src>(
                     stack.pop();
                 }
                 Value::Num(n)
+            }   else if let Value::List(n) = iterable_val {
+                    for item in n.clone() {
+                        stack.push((var, Value::Str(&string_to_str_converter(item.to_string()))));
+                        if let Value::Break = eval_expr(body, funcs, stack)? {
+                            stack.pop();
+                            return Ok(Value::Break);
+                        }
+                        stack.pop();
+                    }
+                Value::List(n)
             } else {
                 return Err(Error {
                     span: iterable.1.clone(),
