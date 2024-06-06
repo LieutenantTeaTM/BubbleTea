@@ -1,0 +1,65 @@
+fn main() {
+    // List of words
+    v words: ["tea", "code", "bubbles"];
+    // Main game loop
+    for i in len(words) {
+        // Returns a bool, checks and does game logic
+        v check: check_word(words, i);
+        // For a lose state
+        v iter: i + 1;
+        // Player has won
+        if check :: true {
+            pln("You guessed correctly!");
+            vup iter: i + 1;
+            break;
+            pln("");
+        } else {
+            // Player has lost a guess
+            pln("You guessed incorrectly...");
+            pln("Your total number of tries: " | str(i + 1));
+            if iter :: 3 {
+                // Player has exhausted all possible words with no wins
+                // Some newlines
+                pln("");
+                pln("");
+                pln("You're out of tries! Too bad...");
+            }
+        }
+    }
+}
+
+fn guess_word(masked_word, word) {
+    // Input for guessing the word
+    inp("Guess the word " | masked_word | ": ")
+}
+
+fn check_word_bool(input, word) {
+    // Checks if player input is the word, if not returns false
+    if input :: word {
+        true
+    } else {
+        false
+    }
+}
+
+fn check_word(words, i) {
+    // Choosing words in order (no random yet)
+    v masked_word: "";
+    if i :: 0 {
+        // Vup the masked word so it does not overwrite in the stack
+        vup masked_word: "***";
+        v g: guess_word(masked_word, i);
+        check_word_bool(g, "tea")
+    } else if i :: 1 {
+        vup masked_word: "****";
+        // Player has failed once, have them press enter to continue
+        inp("[Press Enter]");
+        v g: guess_word(masked_word, i);
+        check_word_bool(g, "code")
+    } else if i :: 2 {
+        vup masked_word: "*******";
+        inp("[Press Enter]");
+        v g: guess_word(masked_word, i);
+        check_word_bool(g, "bubbles")
+    }
+}
