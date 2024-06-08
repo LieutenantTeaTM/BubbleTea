@@ -9,6 +9,8 @@ BubbleTea focuses on syntactic minimalism. Code should be simple and fun.
 - [ ] Online Playground
 - [ ] Bug Fixes
 - [ ] Better List Support
+- [ ] Better documentation
+- [ ] More examples
 
 BubbleTea is interpreted and dynamically typed, providing accessibility for anyone, BubbleTea closer resembles a scripting language rather than a full programming language.
 
