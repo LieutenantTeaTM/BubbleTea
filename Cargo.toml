@@ -5,7 +5,19 @@ edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+[profile.dev]
+opt-level = 1
+overflow-checks = false
+lto = false
+incremental = false
+debug = 0
+strip = "debuginfo"
+
+[profile.dev.package."*"]
+opt-level = 3
+
 [dependencies]
 # Parser and error handling
 ariadne = "0.4.1"
 chumsky = { version = "1.0.0-alpha.4", features = ["label"] }
+rand = "0.8"
