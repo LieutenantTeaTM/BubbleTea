@@ -8,6 +8,10 @@ use ariadne::{sources, Config, Label, Report, ReportKind};
 use chumsky::prelude::*;
 // Rust std libs
 use std::{collections::HashMap, env, fmt, fs, str};
+use std::time::Duration;
+use std::thread::sleep;
+use rand::Rng;
+use std::process::Command;
 
 // Creates a span for the parser
 pub type Span = SimpleSpan<usize>;
@@ -42,8 +46,12 @@ pub enum Token<'src> {
     // Variable names
     Ident(&'src str),
 
+    App,
+
     // Function declaration (fn)
     Fn,
+
+    Fidx,
 
     // Equivalent to rust's let, "v", short for var.
     Let,
@@ -55,6 +63,10 @@ pub enum Token<'src> {
     DefNum,
 
     Len,
+
+    SleepStr,
+
+    Flush,
     
     // Another staple of BubbleTea, "p" short for print. Prints whatever value as you'd expect
     // declared like p(value);
@@ -74,7 +86,15 @@ pub enum Token<'src> {
 
     In,
 
-    //Idx,
+    Idx,
+
+    RemIdx,
+
+    RepIdx,
+    
+    Rng,
+
+    Round,
 
     While,
 
@@ -93,12 +113,20 @@ impl<'src> fmt::Display for Token<'src> {
             Token::Op(s) => write!(f, "{}", s),
             Token::Ctrl(c) => write!(f, "{}", c),
             Token::Ident(s) => write!(f, "{}", s),
+            Token::App => write!(f, "app"),
             Token::Fn => write!(f, "fn"),
             Token::Let => write!(f, "v"),
             Token::Assign => write!(f, "vup"),
+            Token::Flush => write!(f, "flush"),
             Token::DefStr => write!(f, "str"),
             Token::DefNum => write!(f, "num"),
-            //Token::Idx => write!(f, "idx"),
+            Token::SleepStr => write!(f, "sleep"),
+            Token::Fidx => write!(f, "fidx"),
+            Token::Idx => write!(f, "idx"),
+            Token::RemIdx => write!(f, "rem_idx"),
+            Token::RepIdx => write!(f, "rep_idx"),
+            Token::Rng => write!(f, "rng"),
+            Token::Round => write!(f, "round"),
             Token::Len => write!(f, "len"),
             Token::Print => write!(f, "p"),
             Token::PrintLine => write!(f, "pln"),
@@ -108,7 +136,7 @@ impl<'src> fmt::Display for Token<'src> {
             Token::If => write!(f, "if"),
             Token::Else => write!(f, "else"),
             Token::While => write!(f, "while"),
-            Token::Break => write!(f, "break")
+            Token::Break => write!(f, "break"),
         }
     }
 }
@@ -132,7 +160,7 @@ fn lexer<'src>(
 
 
     // A parser for operators
-    let op = one_of("+*-/><!:|")
+    let op = one_of("+*-/><!:&|")
         .repeated()
         .at_least(1)
         .to_slice()
@@ -144,12 +172,20 @@ fn lexer<'src>(
     // A parser for identifiers and keywords
     let ident = text::ascii::ident().map(|ident: &str| match ident {
         "fn" => Token::Fn,
+        "app" => Token::App,
+        "fidx" => Token::Fidx,
         "v" => Token::Let,
         "vup" => Token::Assign,
         "str" => Token::DefStr,
-        //"idx" => Token::Idx,
+        "idx" => Token::Idx,
+        "rem_idx" => Token::RemIdx,
+        "rep_idx" => Token::RepIdx,
+        "rng" => Token::Rng,
+        "round" => Token::Round,
         "num" => Token::DefNum,
+        "flush" => Token::Flush,
         "len" => Token::Len,
+        "sleep" => Token::SleepStr,
         "p" => Token::Print,
         "pln" => Token::PrintLine,
         "inp" => Token::InputBuf,
@@ -194,7 +230,7 @@ enum Value<'src> {
     Str(&'src str),
     List(Vec<Self>),
     Func(&'src str),
-    Break
+    Break,
 }
 
 impl<'src> Value<'src> {
@@ -228,7 +264,7 @@ impl<'src> std::fmt::Display for Value<'src> {
                     .join(", ")
             ),
             Self::Func(name) => write!(f, "<function: {}>", name),
-            Self::Break => write!(f, "break")
+            Self::Break => write!(f, "break"),
         }
     }
 }
@@ -247,6 +283,8 @@ enum BinaryOp {
     LessEq,
     Eq,
     NotEq,
+    And,
+    Or,
 }
 
 pub type Spanned<T> = (T, Span);
@@ -256,19 +294,27 @@ pub type Spanned<T> = (T, Span);
 enum Expr<'src> {
     Error,
     Value(Value<'src>),
+    App(Vec<Spanned<Self>>),
+    Fidx(Vec<Spanned<Self>>),
     List(Vec<Spanned<Self>>),
     Local(&'src str),
     Let(&'src str, Box<Spanned<Self>>, Box<Spanned<Self>>),
     Assign(&'src str, Box<Spanned<Self>>, Box<Spanned<Self>>),
     DefStr(Box<Spanned<Self>>),
+    Flush(Box<Spanned<Self>>),
     DefNum(Box<Spanned<Self>>),
-    //Idx(&'src str, Box<Spanned<Self>>, Box<Spanned<Self>>),
+    Idx(Vec<Spanned<Self>>),
+    RemIdx(Vec<Spanned<Self>>),
+    RepIdx(Vec<Spanned<Self>>),
+    Rng(Vec<Spanned<Self>>),
+    Round(Box<Spanned<Self>>),
     Len(Box<Spanned<Self>>),
     InputBuf(Box<Spanned<Self>>),
     Then(Box<Spanned<Self>>, Box<Spanned<Self>>),
     Binary(Box<Spanned<Self>>, BinaryOp, Box<Spanned<Self>>),
     Call(Box<Spanned<Self>>, Spanned<Vec<Spanned<Self>>>),
     If(Box<Spanned<Self>>, Box<Spanned<Self>>, Box<Spanned<Self>>),
+    SleepStr(Box<Spanned<Self>>),
     Print(Box<Spanned<Self>>),
     PrintLine(Box<Spanned<Self>>),
     ForLoop(&'src str, Box<Spanned<Self>>, Box<Spanned<Self>>),
@@ -324,6 +370,13 @@ fn expr_parser<'tokens, 'src: 'tokens>() -> impl Parser<
                 .then(expr.clone())
                 .map(|((name, val), body)| Expr::Let(name, Box::new(val), Box::new(body)));
 
+            let append_ = just(Token::App)
+                .ignore_then(
+                    items
+                    .clone()
+                    .map(Expr::App)
+                    .delimited_by(just(Token::Ctrl('(')), just(Token::Ctrl(')'))));
+
             let assign = just(Token::Assign)
                 .ignore_then(ident)
                 .then_ignore(just(Token::Op(":")))
@@ -337,43 +390,96 @@ fn expr_parser<'tokens, 'src: 'tokens>() -> impl Parser<
                 .then(expr.clone())
                 .map(|_ | Expr::Break);
 
+            let fidx = just(Token::Fidx)
+                .ignore_then(
+                    items
+                    .clone()
+                    .map(Expr::Fidx)
+                    .delimited_by(just(Token::Ctrl('(')), just(Token::Ctrl(')'))));
+
             let list = items
                 .clone()
                 .map(Expr::List)
                 .delimited_by(just(Token::Ctrl('[')), just(Token::Ctrl(']')));
 
+            let idx = just(Token::Idx)
+                .ignore_then(
+                    items
+                    .clone()
+                    .map(Expr::Idx)
+                    .delimited_by(just(Token::Ctrl('(')), just(Token::Ctrl(')'))));
+
+            let rem_idx = just(Token::RemIdx)
+                    .ignore_then(
+                        items
+                        .clone()
+                        .map(Expr::RemIdx)
+                        .delimited_by(just(Token::Ctrl('(')), just(Token::Ctrl(')'))));
+                    
+            let rep_idx = just(Token::RepIdx)
+                    .ignore_then(
+                        items
+                        .clone()
+                        .map(Expr::RepIdx)
+                        .delimited_by(just(Token::Ctrl('(')), just(Token::Ctrl(')'))));
+
+            let rng_ = just(Token::Rng)
+                        .ignore_then(
+                            items
+                            .clone()
+                            .map(Expr::Rng)
+                            .delimited_by(just(Token::Ctrl('(')), just(Token::Ctrl(')'))));
+
             // 'Atoms' are expressions that contain no ambiguity
             let atom = val
                 .or(ident.map(Expr::Local))
                 .or(let_)
+                .or(append_)
+                .or(fidx)
                 .or(assign)
                 .or(break_)
                 .or(list)
+                .or(idx)
+                .or(rem_idx)
+                .or(rep_idx)
+                .or(rng_)
+                //.or(atom_choice)
+                .or(just(Token::Round)
+                    .ignore_then(
+                        expr.clone()
+                            .delimited_by(just(Token::Ctrl('(')), just(Token::Ctrl(')'))),
+                    )
+                .map(|expr| Expr::Round(Box::new(expr))))
                 .or(just(Token::DefStr)
                     .ignore_then(
                         expr.clone()
                             .delimited_by(just(Token::Ctrl('(')), just(Token::Ctrl(')'))),
                     )
                 .map(|expr| Expr::DefStr(Box::new(expr))))
-                /*.or(just(Token::Idx)
-                    .ignore_then(ident
-                        .then(inline_expr.clone())
-                        .then_ignore(just(Token::Ctrl(',')))
-                        .then(expr.clone()))
-                        .delimited_by(just(Token::Ctrl('(')), just(Token::Ctrl(')')))
-                    .map(|((name, val), body)| Expr::Idx(name, Box::new(val), Box::new(body))))*/
                 .or(just(Token::DefNum)
                     .ignore_then(
                         expr.clone()
                             .delimited_by(just(Token::Ctrl('(')), just(Token::Ctrl(')'))),
                     )
                 .map(|expr| Expr::DefNum(Box::new(expr))))
+                .or(just(Token::Flush)
+                    .ignore_then(
+                        expr.clone()
+                            .delimited_by(just(Token::Ctrl('(')), just(Token::Ctrl(')'))),
+                    )
+                    .map(|expr| Expr::Flush(Box::new(expr))))
                 .or(just(Token::Len)
                     .ignore_then(
                         expr.clone()
                             .delimited_by(just(Token::Ctrl('(')), just(Token::Ctrl(')'))),
                     )
                 .map(|expr| Expr::Len(Box::new(expr))))
+                .or(just(Token::SleepStr)
+                    .ignore_then(
+                        expr.clone()
+                            .delimited_by(just(Token::Ctrl('(')), just(Token::Ctrl(')')))
+                    )
+                    .map(|expr| Expr::SleepStr(Box::new(expr))))
                 .or(just(Token::Print)
                     .ignore_then(
                         expr.clone()
@@ -487,7 +593,16 @@ fn expr_parser<'tokens, 'src: 'tokens>() -> impl Parser<
                     (Expr::Binary(Box::new(a), op, Box::new(b)), e.span())
                 });
 
-            compare.labelled("expression").as_context()
+            let op = just(Token::Op("&&"))
+                .to(BinaryOp::And)
+                .or(just(Token::Op("||")).to(BinaryOp::Or));
+            let and_or = compare
+                .clone()
+                .foldl_with(op.then(compare).repeated(), |a, (op, b), e| {
+                    (Expr::Binary(Box::new(a), op, Box::new(b)), e.span())
+                });
+
+            and_or.labelled("expression").as_context()
         });
 
         // Blocks are expressions but delimited with braces
@@ -503,7 +618,8 @@ fn expr_parser<'tokens, 'src: 'tokens>() -> impl Parser<
                     (Token::Ctrl('['), Token::Ctrl(';')),
                 ],
                 |span| (Expr::Error, span),
-            )));
+            )))
+            .boxed();
 
         let if_: Recursive<dyn Parser<_, (Expr, SimpleSpan), _>> = recursive(|if_| {
             just(Token::If)
@@ -579,7 +695,8 @@ fn expr_parser<'tokens, 'src: 'tokens>() -> impl Parser<
                 (Token::Ctrl('['), Token::Ctrl(']')),
             ],
             |span| (Expr::Error, span),
-        );
+        )
+        .boxed();
 
         block_chain
             .labelled("block")
@@ -610,7 +727,7 @@ fn expr_parser<'tokens, 'src: 'tokens>() -> impl Parser<
                         span,
                     )
                 },
-            )
+            ).boxed()
     })
 }
 
@@ -621,15 +738,16 @@ fn funcs_parser<'tokens, 'src: 'tokens>() -> impl Parser<
     HashMap<&'src str, Func<'src>>,
     extra::Err<Rich<'tokens, Token<'src>, Span>>,
 > + Clone {
-    let ident = select! { Token::Ident(ident) => ident };
+    let ident = select! { Token::Ident(ident) => ident }.boxed();
 
     // Argument lists are just identifiers separated by commas, surrounded by parentheses
-    let args = ident
+    let args = ident.clone()
         .separated_by(just(Token::Ctrl(',')))
         .allow_trailing()
         .collect()
         .delimited_by(just(Token::Ctrl('(')), just(Token::Ctrl(')')))
-        .labelled("function args");
+        .labelled("function args")
+        .boxed();
 
 
 
@@ -656,7 +774,8 @@ fn funcs_parser<'tokens, 'src: 'tokens>() -> impl Parser<
                 ))),
         )
         .map(|(((name, args), span), body)| (name, Func { args, span, body }))
-        .labelled("function");
+        .labelled("function")
+        .boxed();
 
     func.repeated()
         .collect::<Vec<_>>()
@@ -671,7 +790,7 @@ fn funcs_parser<'tokens, 'src: 'tokens>() -> impl Parser<
                 }
             }
             funcs
-        })
+        }).boxed()
 }
 
 struct Error {
@@ -688,6 +807,23 @@ fn char_to_str_converter<'src>(c: char) -> &'src str {
 fn string_to_str_converter<'src>(c: String) -> &'src str {
     let s: String = c.to_string();
     Box::leak(s.into_boxed_str())
+}
+
+#[allow(dead_code)]
+#[cfg(target_os = "windows")]
+fn clear_screen() {
+    Command::new("cmd")
+        .args(&["/C", "cls"])
+        .status()
+        .unwrap();
+}
+
+#[allow(dead_code)]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn clear_screen() {
+    Command::new("clear")
+        .status()
+        .unwrap();
 }
 
 // Evaluate gathered expressions
@@ -722,6 +858,26 @@ fn eval_expr<'src>(
             stack.pop();
             res
         }
+        Expr::App(items) => Value::List({
+            if items.len() != 2 {
+                return Err(Error {
+                    span: items[0].1, 
+                    msg: format!("Wrong number of args (expected 2)"),
+                });
+            } else {
+                let arg1 = eval_expr(&items[0], funcs, stack)?;
+                let arg2 = eval_expr(&items[1], funcs, stack)?;
+                if let Value::List(mut l) = arg1 {
+                    l.push(arg2.clone());
+                    l.clone()
+                } else {
+                    return Err(Error {
+                        span: items[0].1, 
+                        msg: format!("Arg 1 must be a list"),
+                    });
+                }
+            }
+        }),
         Expr::Assign(local, val, body) => {
             let new_val = eval_expr(val, funcs, stack)?;
             if let Some(_var) = stack.iter_mut().rev().find(|(l, _)| l == local) {
@@ -775,6 +931,45 @@ fn eval_expr<'src>(
         Expr::Binary(a, BinaryOp::NotEq, b) => {
             Value::Bool(eval_expr(a, funcs, stack)? != eval_expr(b, funcs, stack)?)
         }
+        Expr::Binary(a, BinaryOp::And, b) => {
+            if let Value::Bool(a_b) = eval_expr(a, funcs, stack)? {
+                if let Value::Bool(b_b) = eval_expr(b, funcs, stack)? {
+                    Value::Bool(a_b && b_b)
+                }
+                else {
+                    return Err(Error {
+                        span: b.1,
+                        msg: format!("Argument 2 must be of type bool"),
+                    });
+                }
+            }
+            else {
+                return Err(Error {
+                    span: b.1,
+                    msg: format!("Argument 1 must be of type bool"),
+                });
+            }
+        }
+        Expr::Binary(a, BinaryOp::Or, b) => {
+            if let Value::Bool(a_b) = eval_expr(a, funcs, stack)? {
+                if let Value::Bool(b_b) = eval_expr(b, funcs, stack)? {
+                    Value::Bool(a_b || b_b)
+                }
+                else {
+                    return Err(Error {
+                        span: b.1,
+                        msg: format!("Argument 2 must be of type bool"),
+                    });
+                }
+            }
+            else {
+                return Err(Error {
+                    span: b.1,
+                    msg: format!("Argument 1 must be of type bool"),
+                });
+            }
+            
+        }
         Expr::Call(func, args) => {
             let f = eval_expr(func, funcs, stack)?;
             match f {
@@ -816,6 +1011,47 @@ fn eval_expr<'src>(
                 }
             }
         }
+
+        Expr::Fidx(items) => Value::Num({
+            if items.len() != 2 {
+                return Err(Error {
+                    span: items[0].1, 
+                    msg: format!("Wrong number of args (expected 2)"),
+                });
+            } else {
+                let arg1 = eval_expr(&items[0], funcs, stack)?;
+                let arg2 = eval_expr(&items[1], funcs, stack)?;
+                if let Value::List(l) = arg1 {
+                    if l.contains(&arg2) {
+                        let index = l.iter().position(|r| *r == arg2).unwrap();
+                        let val = index as f64;
+                        val
+                    } else {
+                        return Err(Error {
+                            span: items[0].1, 
+                            msg: format!("Value not found in list"),
+                        });
+                    }
+                } else {
+                    return Err(Error {
+                        span: items[0].1, 
+                        msg: format!("Arg 1 must be a list"),
+                    });
+                }
+            }
+        }),
+
+        Expr::SleepStr(a) => {
+            let v = eval_expr(a, funcs, stack)?;
+            let t = eval_expr(a, funcs, stack)?;
+            sleep(Duration::from_millis(t.clone().num(a.1)?.round() as u64));
+            v
+        },
+        Expr::Flush(a) => {
+            let val = eval_expr(a, funcs, stack)?;
+            clear_screen();
+            val    
+        },
         Expr::Print(a) => {
             let val = eval_expr(a, funcs, stack)?;
             print!("{}", val);
@@ -833,6 +1069,158 @@ fn eval_expr<'src>(
             let _b1 = std::io::stdin().read_line(&mut line).unwrap();
             line.leak().trim()
         }),
+
+        Expr::Idx(items) => {
+            if items.len() != 2 {
+                return Err(Error {
+                    span: items[0].1, 
+                    msg: format!("Wrong number of args (expected 2)"),
+                });
+            } else {
+                let arg1 = eval_expr(&items[0], funcs, stack)?;
+                let arg2 = eval_expr(&items[1], funcs, stack)?;
+                if let Value::List(l) = arg1 {
+                    if let Value::Num(n) = arg2 {
+                        if (n.round() as i64) > ((l.len() - 1) as i64) || (n.round() as i64) < (0) {
+                            return Err(Error {
+                                span: items[1].1, 
+                                msg: format!("Index out of range 0..{}", l.len() - 1),
+                            });
+                        }
+                        else {
+                            let val = &l[(n.round() as i64) as usize];
+                            val.to_owned()
+                        }
+                    } else {
+                        return Err(Error {
+                            span: items[1].1, 
+                            msg: format!("Arg 2 must be a num"),
+                        });
+                    }
+                } else {
+                    return Err(Error {
+                        span: items[0].1, 
+                        msg: format!("Arg 1 must be a list"),
+                    });
+                }
+            }
+        },
+
+        Expr::RemIdx(items) => Value::List({
+            if items.len() != 2 {
+                return Err(Error {
+                    span: items[0].1, 
+                    msg: format!("Wrong number of args (expected 2)"),
+                });
+            } else {
+                let arg1 = eval_expr(&items[0], funcs, stack)?;
+                let arg2 = eval_expr(&items[1], funcs, stack)?;
+                if let Value::List(mut l) = arg1 {
+                    if let Value::Num(n) = arg2 {
+                        if (n.round() as i64) > ((l.len() - 1) as i64) || (n.round() as i64) < (0) {
+                            return Err(Error {
+                                span: items[1].1, 
+                                msg: format!("Index out of range 0..{}", l.len() - 1),
+                            });
+                        }
+                        else {
+                            l.remove((n.round() as i64) as usize);
+                            l.clone()
+                        }
+                    } else {
+                        return Err(Error {
+                            span: items[1].1, 
+                            msg: format!("Arg 2 must be a num"),
+                        });
+                    }
+                } else {
+                    return Err(Error {
+                        span: items[0].1, 
+                        msg: format!("Arg 1 must be a list"),
+                    });
+                }
+            }
+        }),
+
+        Expr::RepIdx(items) => Value::List({
+            if items.len() != 3 {
+                return Err(Error {
+                    span: items[0].1, 
+                    msg: format!("Wrong number of args (expected 2)"),
+                });
+            } else {
+                let arg1 = eval_expr(&items[0], funcs, stack)?;
+                let arg2 = eval_expr(&items[1], funcs, stack)?;
+                let arg3 = eval_expr(&items[2], funcs, stack)?;
+                if let Value::List(mut l) = arg1 {
+                    if let Value::Num(n) = arg2 {
+                        if (n.round() as i64) > ((l.len() - 1) as i64) || (n.round() as i64) < (0) {
+                            return Err(Error {
+                                span: items[1].1, 
+                                msg: format!("Index out of range 0..{}", l.len() - 1),
+                            });
+                        }
+                        else {
+                            l[(n.round() as i64) as usize] = arg3.clone();
+                            l.clone()
+                        }
+                    } else {
+                        return Err(Error {
+                            span: items[1].1, 
+                            msg: format!("Arg 2 must be a num"),
+                        });
+                    }
+                } else {
+                    return Err(Error {
+                        span: items[0].1, 
+                        msg: format!("Arg 1 must be a list"),
+                    });
+                }
+            }
+        }),
+
+        Expr::Rng(items) => Value::Num({
+            if items.len() != 2 {
+                return Err(Error {
+                    span: items[0].1, 
+                    msg: format!("Wrong number of args (expected 2)"),
+            })
+            } else {
+                let arg1 = eval_expr(&items[0], funcs, stack)?;
+                let arg2 = eval_expr(&items[1], funcs, stack)?;
+                if let Value::Num(x) = arg1 {
+                    if let Value::Num(y) = arg2 {
+                        let x_x = (x.clone().round() as f64) as i64;
+                        let y_y = ((y.clone().round() as f64) as i64) + 1;
+                        let num = (rand::thread_rng().gen_range(x_x..y_y)) as f64;
+                        num
+                    } else {
+                        return Err(Error {
+                            span: items[1].1.clone(),
+                            msg: format!("Value must be numeric"),
+                        });
+                    }
+                } else {
+                    return Err(Error {
+                        span: items[0].1.clone(),
+                        msg: format!("Value must be numeric"),
+                    });
+                }
+            }
+        }),
+
+        Expr::Round(f) => Value::Num({
+            let f_expr = eval_expr(f, funcs, stack)?;
+            if let Value::Num(n) = f_expr {
+                n.clone().round() as f64
+            } else {
+                return Err(Error {
+                    span: f.1.clone(),
+                    msg: format!("Value must be numeric"),
+                });
+            }
+        }),
+
         Expr::DefStr(a) => Value::Str({
             let val = eval_expr(a, funcs, stack)?.to_string();
             val.leak()
