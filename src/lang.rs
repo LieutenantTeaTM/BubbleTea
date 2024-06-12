@@ -8,8 +8,15 @@ use ariadne::{sources, Config, Label, Report, ReportKind};
 use chumsky::prelude::*;
 // Rust std libs
 use std::{collections::HashMap, env, fmt, fs, str};
+use std::fs::OpenOptions;
+use std::io::{BufRead, BufReader, Write, BufWriter};
+use std::io;
+use std::sync::mpsc;
+use std::sync::mpsc::Receiver;
 use std::time::Duration;
 use std::thread::sleep;
+use std::thread;
+use std::fs::File;
 use rand::Rng;
 use std::process::Command;
 
@@ -76,6 +83,20 @@ pub enum Token<'src> {
 
     InputBuf,
 
+    FutureInputBuf,
+
+    ReadFile,
+
+    DelFile,
+
+    WriteFile,
+
+    ReadFileList,
+
+    WriteFileList,
+
+    CreateFile,
+
     // Simple if
     If,
     
@@ -131,7 +152,14 @@ impl<'src> fmt::Display for Token<'src> {
             Token::Print => write!(f, "p"),
             Token::PrintLine => write!(f, "pln"),
             Token::InputBuf => write!(f, "inp"),
+            Token::ReadFile => write!(f, "fs_read"),
+            Token::ReadFileList => write!(f, "fs_readl"),
+            Token::DelFile => write!(f, "fs_del"),
+            Token::WriteFile => write!(f, "fs_write"),
+            Token::WriteFileList => write!(f, "fs_writel"),
+            Token::CreateFile => write!(f, "fs_create"),
             Token::For => write!(f, "for"),
+            Token::FutureInputBuf => write!(f, "future_inp"),
             Token::In => write!(f, "in"),
             Token::If => write!(f, "if"),
             Token::Else => write!(f, "else"),
@@ -160,7 +188,7 @@ fn lexer<'src>(
 
 
     // A parser for operators
-    let op = one_of("+*-/><!:&|")
+    let op = one_of("+*-/><%!:&|")
         .repeated()
         .at_least(1)
         .to_slice()
@@ -189,8 +217,15 @@ fn lexer<'src>(
         "p" => Token::Print,
         "pln" => Token::PrintLine,
         "inp" => Token::InputBuf,
+        "fs_read" => Token::ReadFile,
+        "fs_readl" => Token::ReadFileList,
+        "fs_del" => Token::DelFile,
+        "fs_write" => Token::WriteFile,
+        "fs_writel" => Token::WriteFileList,
+        "fs_create" => Token::CreateFile,
         "if" => Token::If,
         "for" => Token::For,
+        "future_inp" => Token::FutureInputBuf,
         "while" => Token::While,
         "break" => Token::Break,
         "in" => Token::In,
@@ -280,6 +315,7 @@ enum BinaryOp {
     GreaterThan,
     LessThan,
     GreaterEq,
+    Modulus,
     LessEq,
     Eq,
     NotEq,
@@ -310,6 +346,13 @@ enum Expr<'src> {
     Round(Box<Spanned<Self>>),
     Len(Box<Spanned<Self>>),
     InputBuf(Box<Spanned<Self>>),
+    FutureInputBuf(Box<Spanned<Self>>),
+    ReadFile(Vec<Spanned<Self>>),
+    ReadFileList(Vec<Spanned<Self>>),
+    DelFile(Vec<Spanned<Self>>),
+    WriteFile(Vec<Spanned<Self>>),
+    WriteFileList(Vec<Spanned<Self>>),
+    CreateFile(Vec<Spanned<Self>>),
     Then(Box<Spanned<Self>>, Box<Spanned<Self>>),
     Binary(Box<Spanned<Self>>, BinaryOp, Box<Spanned<Self>>),
     Call(Box<Spanned<Self>>, Spanned<Vec<Spanned<Self>>>),
@@ -430,101 +473,154 @@ fn expr_parser<'tokens, 'src: 'tokens>() -> impl Parser<
                             .map(Expr::Rng)
                             .delimited_by(just(Token::Ctrl('(')), just(Token::Ctrl(')'))));
 
-            // 'Atoms' are expressions that contain no ambiguity
-            let atom = val
-                .or(ident.map(Expr::Local))
-                .or(let_)
-                .or(append_)
-                .or(fidx)
-                .or(assign)
-                .or(break_)
-                .or(list)
-                .or(idx)
-                .or(rem_idx)
-                .or(rep_idx)
-                .or(rng_)
-                //.or(atom_choice)
-                .or(just(Token::Round)
-                    .ignore_then(
-                        expr.clone()
-                            .delimited_by(just(Token::Ctrl('(')), just(Token::Ctrl(')'))),
-                    )
-                .map(|expr| Expr::Round(Box::new(expr))))
-                .or(just(Token::DefStr)
-                    .ignore_then(
-                        expr.clone()
-                            .delimited_by(just(Token::Ctrl('(')), just(Token::Ctrl(')'))),
-                    )
-                .map(|expr| Expr::DefStr(Box::new(expr))))
-                .or(just(Token::DefNum)
-                    .ignore_then(
-                        expr.clone()
-                            .delimited_by(just(Token::Ctrl('(')), just(Token::Ctrl(')'))),
-                    )
-                .map(|expr| Expr::DefNum(Box::new(expr))))
-                .or(just(Token::Flush)
-                    .ignore_then(
-                        expr.clone()
-                            .delimited_by(just(Token::Ctrl('(')), just(Token::Ctrl(')'))),
-                    )
-                    .map(|expr| Expr::Flush(Box::new(expr))))
-                .or(just(Token::Len)
-                    .ignore_then(
-                        expr.clone()
-                            .delimited_by(just(Token::Ctrl('(')), just(Token::Ctrl(')'))),
-                    )
-                .map(|expr| Expr::Len(Box::new(expr))))
-                .or(just(Token::SleepStr)
-                    .ignore_then(
-                        expr.clone()
-                            .delimited_by(just(Token::Ctrl('(')), just(Token::Ctrl(')')))
-                    )
-                    .map(|expr| Expr::SleepStr(Box::new(expr))))
-                .or(just(Token::Print)
-                    .ignore_then(
-                        expr.clone()
-                            .delimited_by(just(Token::Ctrl('(')), just(Token::Ctrl(')')))
-                    )
-                    .map(|expr| Expr::Print(Box::new(expr))))
-                .or(just(Token::PrintLine)
-                    .ignore_then(
-                        expr.clone()
-                            .delimited_by(just(Token::Ctrl('(')), just(Token::Ctrl(')')))
-                    )
-                    .map(|expr| Expr::PrintLine(Box::new(expr))))
-                .or(just(Token::InputBuf)
-                    .ignore_then(
-                        expr.clone()
-                            .delimited_by(just(Token::Ctrl('(')), just(Token::Ctrl(')')))
-                    )
-                    .map(|expr| Expr::InputBuf(Box::new(expr))))
-                .map_with(|expr, e| (expr, e.span()))
-                // Atoms can also just be normal expressions, but surrounded with parentheses
-                .or(expr
-                    .clone()
-                    .delimited_by(just(Token::Ctrl('(')), just(Token::Ctrl(')'))))
-                // Attempt to recover anything that looks like a parenthesised expression but contains errors
-                .recover_with(via_parser(nested_delimiters(
-                    Token::Ctrl('('),
-                    Token::Ctrl(')'),
-                    [
-                        (Token::Ctrl('['), Token::Ctrl(']')),
-                        (Token::Ctrl('{'), Token::Ctrl('}')),
-                    ],
-                    |span| (Expr::Error, span),
-                )))
-                // Attempt to recover anything that looks like a list but contains errors
-                .recover_with(via_parser(nested_delimiters(
-                    Token::Ctrl('['),
-                    Token::Ctrl(']'),
-                    [
-                        (Token::Ctrl('('), Token::Ctrl(')')),
-                        (Token::Ctrl('{'), Token::Ctrl('}')),
-                    ],
-                    |span| (Expr::Error, span),
-                )))
-                .boxed();
+                    let read_file = just(Token::ReadFile)
+                            .ignore_then(
+                                items
+                                .clone()
+                                .map(Expr::ReadFile)
+                                .delimited_by(just(Token::Ctrl('(')), just(Token::Ctrl(')'))));
 
+            let read_file_list = just(Token::ReadFileList)
+                            .ignore_then(
+                                items
+                                .clone()
+                                .map(Expr::ReadFileList)
+                                .delimited_by(just(Token::Ctrl('(')), just(Token::Ctrl(')'))));
+
+            let del_file = just(Token::DelFile)
+                                .ignore_then(
+                                    items
+                                    .clone()
+                                    .map(Expr::DelFile)
+                                    .delimited_by(just(Token::Ctrl('(')), just(Token::Ctrl(')'))));
+            
+            let write_file = just(Token::WriteFile)
+                                    .ignore_then(
+                                        items
+                                        .clone()
+                                        .map(Expr::WriteFile)
+                                        .delimited_by(just(Token::Ctrl('(')), just(Token::Ctrl(')'))));
+
+            let write_file_list = just(Token::WriteFileList)
+                                        .ignore_then(
+                                            items
+                                            .clone()
+                                            .map(Expr::WriteFileList)
+                                            .delimited_by(just(Token::Ctrl('(')), just(Token::Ctrl(')'))));
+            let create_file = just(Token::CreateFile)
+                                        .ignore_then(
+                                            items
+                                            .clone()
+                                            .map(Expr::CreateFile)
+                                            .delimited_by(just(Token::Ctrl('(')), just(Token::Ctrl(')'))));
+                                        
+            let atom = val
+                                        .or(ident.map(Expr::Local))
+                                        .or(let_)
+                                        .or(append_)
+                                        .or(fidx)
+                                        .or(assign)
+                                        .or(break_)
+                                        .or(list)
+                                        .or(idx)
+                                        .or(rem_idx)
+                                        .or(rep_idx)
+                                        .or(read_file)
+                                        .or(read_file_list)
+                                        .or(del_file)
+                                        .or(write_file)
+                                        .or(write_file_list)
+                                        .or(create_file)
+                                        .or(rng_)
+                                        //.or(atom_choice)
+                                        .or(just(Token::Round)
+                                            .ignore_then(
+                                                expr.clone()
+                                                    .delimited_by(just(Token::Ctrl('(')), just(Token::Ctrl(')'))),
+                                            )
+                                        .map(|expr| Expr::Round(Box::new(expr))))
+                                        .or(just(Token::DefStr)
+                                            .ignore_then(
+                                                expr.clone()
+                                                    .delimited_by(just(Token::Ctrl('(')), just(Token::Ctrl(')'))),
+                                            )
+                                        .map(|expr| Expr::DefStr(Box::new(expr))))
+                                        .or(just(Token::DefNum)
+                                            .ignore_then(
+                                                expr.clone()
+                                                    .delimited_by(just(Token::Ctrl('(')), just(Token::Ctrl(')'))),
+                                            )
+                                        .map(|expr| Expr::DefNum(Box::new(expr))))
+                                        .or(just(Token::Flush)
+                                            .ignore_then(
+                                                expr.clone()
+                                                    .delimited_by(just(Token::Ctrl('(')), just(Token::Ctrl(')'))),
+                                            )
+                                            .map(|expr| Expr::Flush(Box::new(expr))))
+                                        .or(just(Token::Len)
+                                            .ignore_then(
+                                                expr.clone()
+                                                    .delimited_by(just(Token::Ctrl('(')), just(Token::Ctrl(')'))),
+                                            )
+                                        .map(|expr| Expr::Len(Box::new(expr))))
+                                        .or(just(Token::SleepStr)
+                                            .ignore_then(
+                                                expr.clone()
+                                                    .delimited_by(just(Token::Ctrl('(')), just(Token::Ctrl(')')))
+                                            )
+                                            .map(|expr| Expr::SleepStr(Box::new(expr))))
+                                        .or(just(Token::Print)
+                                            .ignore_then(
+                                                expr.clone()
+                                                    .delimited_by(just(Token::Ctrl('(')), just(Token::Ctrl(')')))
+                                            )
+                                            .map(|expr| Expr::Print(Box::new(expr))))
+                                        .or(just(Token::PrintLine)
+                                            .ignore_then(
+                                                expr.clone()
+                                                    .delimited_by(just(Token::Ctrl('(')), just(Token::Ctrl(')')))
+                                            )
+                                            .map(|expr| Expr::PrintLine(Box::new(expr))))
+                                        .or(just(Token::InputBuf)
+                                            .ignore_then(
+                                                expr.clone()
+                                                    .delimited_by(just(Token::Ctrl('(')), just(Token::Ctrl(')')))
+                                            )
+                                            .map(|expr| Expr::InputBuf(Box::new(expr))))
+                                        .or(just(Token::FutureInputBuf)
+                                            .ignore_then(
+                                                expr.clone()
+                                                    .delimited_by(just(Token::Ctrl('(')), just(Token::Ctrl(')')))
+                                            )
+                                            .map(|expr| Expr::FutureInputBuf(Box::new(expr))))
+                                            .map_with(|expr, e| (expr, e.span()))
+                                            // Atoms can also just be normal expressions, but surrounded with parentheses
+                                            .or(expr
+                                                .clone()
+                                                .delimited_by(just(Token::Ctrl('(')), just(Token::Ctrl(')'))))
+                                            // Attempt to recover anything that looks like a parenthesised expression but contains errors
+                                            .recover_with(via_parser(nested_delimiters(
+                                                Token::Ctrl('('),
+                                                Token::Ctrl(')'),
+                                                [
+                                                    (Token::Ctrl('['), Token::Ctrl(']')),
+                                                    (Token::Ctrl('{'), Token::Ctrl('}')),
+                                                ],
+                                                |span| (Expr::Error, span),
+                                            )))
+                                            // Attempt to recover anything that looks like a list but contains errors
+                                            .recover_with(via_parser(nested_delimiters(
+                                                Token::Ctrl('['),
+                                                Token::Ctrl(']'),
+                                                [
+                                                    (Token::Ctrl('('), Token::Ctrl(')')),
+                                                    (Token::Ctrl('{'), Token::Ctrl('}')),
+                                                ],
+                                                |span| (Expr::Error, span),
+                                            )))
+                                            .boxed();
+                            
+                                    
             // Function calls have very high precedence so we prioritise them
             let call = atom.foldl_with(
                 items
@@ -532,7 +628,8 @@ fn expr_parser<'tokens, 'src: 'tokens>() -> impl Parser<
                     .map_with(|args, e| (args, e.span()))
                     .repeated(),
                 |f, args, e| (Expr::Call(Box::new(f), args), e.span()),
-            );
+            )
+            .boxed();
 
             let op = 
                 just(Token::Op("|"))
@@ -542,7 +639,8 @@ fn expr_parser<'tokens, 'src: 'tokens>() -> impl Parser<
                 .clone()
                 .foldl_with(op.then(call.clone()).repeated(), |a, (op, b), e| {
                     (Expr::Binary(Box::new(a), op, Box::new(b)), e.span())
-                });
+                })
+                .boxed();
 
             // Product ops (multiply and divide) have equal precedence
             let op = just(Token::Op("*"))
@@ -552,7 +650,8 @@ fn expr_parser<'tokens, 'src: 'tokens>() -> impl Parser<
                 .clone()
                 .foldl_with(op.then(cc_compare).repeated(), |a, (op, b), e| {
                     (Expr::Binary(Box::new(a), op, Box::new(b)), e.span())
-                });
+                })
+                .boxed();
 
             // Sum ops (add and subtract) have equal precedence
             let op = just(Token::Op("+"))
@@ -562,17 +661,28 @@ fn expr_parser<'tokens, 'src: 'tokens>() -> impl Parser<
                 .clone()
                 .foldl_with(op.then(product).repeated(), |a, (op, b), e| {
                     (Expr::Binary(Box::new(a), op, Box::new(b)), e.span())
-                });
+                })
+                .boxed();
+
+            let op = just(Token::Op("%"))
+                .to(BinaryOp::Modulus);
+            let modulus_op = sum
+                    .clone()
+                    .foldl_with(op.then(sum).repeated(), |a, (op, b), e| {
+                        (Expr::Binary(Box::new(a), op, Box::new(b)), e.span())
+                    })
+                    .boxed();
 
             // Greater than/Less than
             let op = just(Token::Op(">"))
             .to(BinaryOp::GreaterThan)
             .or(just(Token::Op("<")).to(BinaryOp::LessThan));
-            let gt_or_lt = sum
+            let gt_or_lt = modulus_op
                 .clone()
-                .foldl_with(op.then(sum).repeated(), |a, (op, b), e| {
+                .foldl_with(op.then(modulus_op).repeated(), |a, (op, b), e| {
                     (Expr::Binary(Box::new(a), op, Box::new(b)), e.span())
-                });
+                })
+                .boxed();
 
             let op = just(Token::Op(">:"))
                 .to(BinaryOp::GreaterEq)
@@ -581,7 +691,8 @@ fn expr_parser<'tokens, 'src: 'tokens>() -> impl Parser<
                     .clone()
                     .foldl_with(op.then(gt_or_lt).repeated(), |a, (op, b), e| {
                         (Expr::Binary(Box::new(a), op, Box::new(b)), e.span())
-                    });
+                    })
+                    .boxed();
 
             // Comparison ops (equal, not-equal) have equal precedence
             let op = just(Token::Op("::"))
@@ -591,7 +702,8 @@ fn expr_parser<'tokens, 'src: 'tokens>() -> impl Parser<
                 .clone()
                 .foldl_with(op.then(ge_or_le).repeated(), |a, (op, b), e| {
                     (Expr::Binary(Box::new(a), op, Box::new(b)), e.span())
-                });
+                })
+                .boxed();
 
             let op = just(Token::Op("&&"))
                 .to(BinaryOp::And)
@@ -600,7 +712,8 @@ fn expr_parser<'tokens, 'src: 'tokens>() -> impl Parser<
                 .clone()
                 .foldl_with(op.then(compare).repeated(), |a, (op, b), e| {
                     (Expr::Binary(Box::new(a), op, Box::new(b)), e.span())
-                });
+                })
+                .boxed();
 
             and_or.labelled("expression").as_context()
         });
@@ -685,7 +798,8 @@ fn expr_parser<'tokens, 'src: 'tokens>() -> impl Parser<
             .clone()
             .foldl_with(block_expr.clone().repeated(), |a, b, e| {
                 (Expr::Then(Box::new(a), Box::new(b)), e.span())
-            });
+            })
+            .boxed();
 
         let block_recovery = nested_delimiters(
             Token::Ctrl('{'),
@@ -826,6 +940,39 @@ fn clear_screen() {
         .unwrap();
 }
 
+fn rem_file(file_path: &str) -> io::Result<()> {
+    fs::remove_file(file_path)
+}
+
+fn spawn_stdin_channel() -> Receiver<String> {
+    let (tx, rx) = mpsc::channel::<String>();
+    thread::spawn(move || loop {
+        let mut buffer = String::new();
+        io::stdin().read_line(&mut buffer).unwrap();
+        tx.send(buffer).unwrap();
+    });
+    rx
+}
+fn read_from_channel<'src>(rx: &Receiver<String>) -> &'src str {
+    Box::leak(rx.recv().unwrap().into_boxed_str())
+}
+
+
+
+fn read_lines_from_file(file_path: &str) -> io::Result<Vec<Value>> {
+    let file = File::open(file_path);
+    
+    let reader = BufReader::new(file.ok().unwrap());
+    
+    let mut lines: Vec<Value> = Vec::new();
+    
+    for line in reader.lines() {
+        lines.push(Value::Str(&string_to_str_converter(line?.to_string())));
+    }
+    
+    Ok(lines)
+}
+
 // Evaluate gathered expressions
 fn eval_expr<'src>(
     expr: &Spanned<Expr<'src>>,
@@ -912,6 +1059,9 @@ fn eval_expr<'src>(
         ),
         Expr::Binary(a, BinaryOp::Div, b) => Value::Num(
             eval_expr(a, funcs, stack)?.num(a.1)? / eval_expr(b, funcs, stack)?.num(b.1)?,
+        ),
+        Expr::Binary(a, BinaryOp::Modulus, b) => Value::Num(
+            eval_expr(a, funcs, stack)?.num(a.1)? % eval_expr(b, funcs, stack)?.num(b.1)?,
         ),
         Expr::Binary(a, BinaryOp::GreaterThan, b) => {
             Value::Bool(eval_expr(a, funcs, stack)?.num(a.1)? > eval_expr(b, funcs, stack)?.num(b.1)?)
@@ -1063,11 +1213,17 @@ fn eval_expr<'src>(
             val
         },
         Expr::InputBuf(a) => Value::Str({
-            let val = eval_expr(a, funcs, stack)?;
-            println!("{}", val);
+            let _val = eval_expr(a, funcs, stack)?;
             let mut line = String::new();
             let _b1 = std::io::stdin().read_line(&mut line).unwrap();
             line.leak().trim()
+        }),
+
+        Expr::FutureInputBuf(a) => Value::Str({
+            let _val = eval_expr(a, funcs, stack)?;
+            let rx = spawn_stdin_channel();
+            let line = read_from_channel(&rx);
+            line.trim()
         }),
 
         Expr::Idx(items) => {
@@ -1174,6 +1330,198 @@ fn eval_expr<'src>(
                     return Err(Error {
                         span: items[0].1, 
                         msg: format!("Arg 1 must be a list"),
+                    });
+                }
+            }
+        }),
+
+        Expr::DelFile(items) => {
+            if items.len() != 1 {
+                return Err(Error {
+                    span: items[0].1, 
+                    msg: format!("Wrong number of args (expected 1)"),
+                });
+            }
+            let arg1 = eval_expr(&items[0], funcs, stack)?;
+
+            if let Value::Str(s) = arg1 {
+                let r = rem_file(s);
+                if r.is_ok() {
+                    print!("");
+                } else {
+                    return Err(Error {
+                        span: items[0].1, 
+                        msg: format!("Error deleting file {}", items[0].1),
+                    });
+                }
+            }
+            
+            arg1
+        },
+
+        Expr::CreateFile(items) => {
+            if items.len() != 2 {
+                return Err(Error {
+                    span: items[0].1, 
+                    msg: format!("Wrong number of args (expected 2)"),
+                });
+            } else {
+                let arg1 = eval_expr(&items[0], funcs, stack)?;
+                let arg2 = eval_expr(&items[1], funcs, stack)?;
+                if let Value::Str(p) = arg1 {
+                    if let Value::Str(expected) = arg2 {
+                        File::create(p).expect(expected);
+                        arg1
+                    } else {
+                        return Err(Error {
+                            span: items[1].1, 
+                            msg: format!("Arg 2 must be a string"),
+                        });
+                    }
+                } else {
+                    return Err(Error {
+                        span: items[0].1, 
+                        msg: format!("Arg 1 must be a string"),
+                    });
+                }
+            }
+        },
+
+        Expr::WriteFile(items) => {
+            if items.len() != 3 {
+                return Err(Error {
+                    span: items[0].1, 
+                    msg: format!("Wrong number of args (expected 3)"),
+                });
+            } else {
+                let arg1 = eval_expr(&items[0], funcs, stack)?;
+                let arg2 = eval_expr(&items[1], funcs, stack)?;
+                let arg3 = eval_expr(&items[2], funcs, stack)?;
+                if let Value::Str(p) = arg1 {
+                    if let Value::Str(d) = arg2 {
+                        if let Value::Str(expected) = arg3 {
+                            fs::write(p, d).expect(expected);
+                            arg1
+                        } else {
+                            return Err(Error {
+                                span: items[2].1, 
+                                msg: format!("Arg 3 must be a string"),
+                            });
+                        }
+                    } else {
+                        return Err(Error {
+                            span: items[1].1, 
+                            msg: format!("Arg 2 must be a string"),
+                        });
+                    }
+                } else {
+                    return Err(Error {
+                        span: items[0].1, 
+                        msg: format!("Arg 1 must be a string"),
+                    });
+                }
+            }
+        },
+
+        Expr::WriteFileList(items) => {
+            if items.len() != 3 {
+                return Err(Error {
+                    span: items[0].1, 
+                    msg: format!("Wrong number of args (expected 3)"),
+                });
+            } else {
+                let arg1 = eval_expr(&items[0], funcs, stack)?;
+                let arg2 = eval_expr(&items[1], funcs, stack)?;
+                let arg3 = eval_expr(&items[2], funcs, stack)?;
+                if let Value::Str(p) = arg1 {
+                    if let Value::List(d) = arg2 {
+                        if let Value::Str(expected) = arg3 {
+                            let f = OpenOptions::new()
+                                .write(true)
+                                .append(true)
+                                .open(p)
+                                .expect(expected);
+                            let mut f = BufWriter::new(f);
+
+                            for i in d {
+                                writeln!(f, "{}", i).expect(expected);
+                            }
+
+                            arg1
+                        } else {
+                            return Err(Error {
+                                span: items[2].1, 
+                                msg: format!("Arg 3 must be a string"),
+                            });
+                        }
+                    } else {
+                        return Err(Error {
+                            span: items[1].1, 
+                            msg: format!("Arg 2 must be a string"),
+                        });
+                    }
+                } else {
+                    return Err(Error {
+                        span: items[0].1, 
+                        msg: format!("Arg 1 must be a string"),
+                    });
+                }
+            }
+        },
+        
+        Expr::ReadFile(items) => Value::Str({
+            if items.len() != 2 {
+                return Err(Error {
+                    span: items[0].1, 
+                    msg: format!("Wrong number of args (expected 2)"),
+                });
+            } else {
+                let arg1 = eval_expr(&items[0], funcs, stack)?;
+                let arg2 = eval_expr(&items[1], funcs, stack)?;
+                if let Value::Str(p) = arg1 {
+                    if let Value::Str(expected) = arg2 {
+                        let contents = fs::read_to_string(p)
+                            .expect(expected);
+                        contents.leak()
+                    } else {
+                        return Err(Error {
+                            span: items[1].1, 
+                            msg: format!("Arg 2 must be a string"),
+                        });
+                    }
+                } else {
+                    return Err(Error {
+                        span: items[0].1, 
+                        msg: format!("Arg 1 must be a string"),
+                    });
+                }
+            }
+        }),
+
+        Expr::ReadFileList(items) => Value::List({
+            if items.len() != 1 {
+                return Err(Error {
+                    span: items[0].1, 
+                    msg: format!("Wrong number of args (expected 1)"),
+                });
+            } else {
+                let arg1 = eval_expr(&items[0], funcs, stack)?;
+                if let Value::Str(p) = arg1 {   
+                    let result_l = read_lines_from_file(p);
+                    if result_l.is_ok() {
+                        let result_vec = result_l.unwrap();
+                        result_vec
+                    } else {
+                        return Err(Error {
+                            span: items[0].1, 
+                            msg: format!("Error reading lines"),
+                        });
+                    }
+                    //Value::Str(p)
+                } else {
+                    return Err(Error {
+                        span: items[0].1, 
+                        msg: format!("Arg 1 must be a string"),
                     });
                 }
             }
