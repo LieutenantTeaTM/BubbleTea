@@ -1,0 +1,57 @@
+// Recursive versions of math.tea
+
+fn main() {
+    v pi: 3.1415926535897932384626433832795028841971;
+    pln("");
+    pln("Degree: " | deg(6, pi));
+    pln("Factorial: " | factorial(6));
+    pln("Power: " | power(6, 3));
+    pln("Sine: " | sin(6, pi, 0, 0));
+    pln("Cosine: " | cos(6, pi));
+}
+
+fn factorial(n) {
+    if n :: 1 || n :: 0 {
+        1
+    }
+    else {
+        n * factorial(n - 1)
+    }
+}
+
+fn deg(x, pi) {
+    v rad: x * pi / 180;
+    rad
+}
+
+fn power(x, n) {
+    if n :: 0 {
+        1
+    } else {
+        x  * power(x, n - 1)
+    }
+}
+
+fn sin(x, pi, k, sinx) {
+    if x > pi {
+        sin(x - 2 * pi, pi, k, sinx)
+    } else if x < -1 * pi {
+        sin(x + 2 * pi, pi, k, sinx)
+    };
+    
+    if x > pi / 2 {
+        sin(pi - x, pi, k, sinx)
+    } else if x < -1 * pi / 2 {
+        sin(-1 * pi - x, pi, k, sinx)
+    };
+
+    if k :: 15 {
+        sinx
+    } else {
+        sin(x, pi, k + 1, sinx + power(-1, k) * power(x, (2 * k + 1)) / factorial(2 * k + 1))
+    }
+}
+
+fn cos(x, pi) {
+    sin(pi / 2 - x, pi, 0, 0)
+}
