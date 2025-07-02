@@ -13,6 +13,7 @@ BubbleTea is a hobby language mostly targeted for recreational/hobby programming
 ### Features
 - [x] Static Typing
 - [x] Syntax minimalism
+- [x] Constant by default variables 
 - [x] User-defined custom macros for running Rust code
 - [x] Transpiling down to native Rust code without needing to use Rust   
 
