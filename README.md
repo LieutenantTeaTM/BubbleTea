@@ -17,3 +17,21 @@ BubbleTea is a hobby language mostly targeted for recreational/hobby programming
 - [x] Transpiling down to native Rust code without needing to use Rust   
 
 **Note:** *Requires the Rust compiler to be installed and working.*
+
+## Syntax Examples
+```
+fn main() -> null {
+  v x: int -> 6;
+  p!(x % 2);
+}
+```
+
+```
+fn main() -> null {
+  p!(add(25.0, 25.0));
+}
+
+fn add(x: float, y: float) -> float {
+  <- x + y * 2.5;
+}
+```
