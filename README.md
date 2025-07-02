@@ -1,17 +1,19 @@
 # BubbleTea
-A fun interpreted toy language written in Rust!
+A minimalist programming language that transpiles directly to Rust with embedded language features.
 
 ![bubbletealogobig](https://github.com/LieutenantTeaTM/BubbleTea/assets/112296448/bace29c8-0355-4739-8e16-1639a858b199)
 
-BubbleTea focuses on syntactic minimalism. Code should be simple and fun.
+BubbleTea is a hobby language mostly targeted for recreational/hobby programming. It is lexed and parsed by a custom Lexer and Parser, then each instruction is transpiled into native Rust code and bundled into an executable. It is high level and simple. It also allows for running arbitrary Rust code directly within it, thus allowing the use for an embedded language.
 
 ### To-Do
-- [ ] Online Playground
-- [ ] Bug Fixes
-- [X] Better List Support
-- [X] Better documentation
+- [ ] Bug fixes
+- [ ] Arrays/Vectors
 - [ ] Proper Examples
 
-BubbleTea is interpreted and dynamically typed, providing accessibility for anyone, BubbleTea closer resembles a scripting language rather than a full programming language.
+### Features
+- [x] Static Typing
+- [x] Syntax minimalism
+- [x] User-defined custom macros for running Rust code
+- [x] Transpiling down to native Rust code without needing to use Rust   
 
-### **Have fun!**
+**Note:** *Requires the Rust compiler to be installed and working.*
