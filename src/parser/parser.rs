@@ -1,13 +1,14 @@
 use std::{collections::HashMap, iter::Peekable, slice::Iter, vec};
 
 use crate::{
-    general::ast::{Expr, ExternFunction, Type, Value},
+    general::ast::{Expr, ExternFunction, IterTarget, RangeIter, Type, Value},
     lexer::lexer::{Lexer, Token, combine_tokens},
     utils::utils::Utililites,
 };
 
 pub struct Parser {
     rpn_output: Vec<Token>,
+    is_cast: bool,
     pub ast_expr: Expr,
     pub functions: HashMap<String, Function>,
     pub variable_stack: HashMap<String, Expr>,
@@ -26,6 +27,7 @@ pub struct Function {
 impl Parser {
     pub fn new() -> Self {
         Parser {
+            is_cast: false,
             rpn_output: Vec::new(),
             ast_expr: Expr::Value {
                 value: Value::Null,
@@ -44,8 +46,8 @@ impl Parser {
         match op {
             "||" => 1,
             "&&" => 2,
-            "==" | "!=" => 3,
-            ">" | "<" | ">=" | "<=" => 4,
+            "::" | "!:" => 3,
+            ">" | "<" | ">:" | "<:" => 4,
             "+" | "-" => 5,
             "*" | "/" => 6,
             "!" => 7,
@@ -286,7 +288,7 @@ impl Parser {
                             }
 
                             let ts = self.type_enum_to_str(ty.clone());
-                            let t = match ty {
+                            let t = match ty.clone() {
                                 Type::Int => Value::Int(0),
                                 Type::Float => Value::Float(0.0),
                                 Type::Bool => Value::Bool(false),
@@ -505,18 +507,39 @@ impl Parser {
     // Shunting Yard Algorithm
     pub fn to_rpn(&mut self, lexer: Lexer) {
         let mut output = Vec::new();
+
         let mut ops = Vec::new();
 
         for token in lexer.tokens {
             match token {
                 Token::Number(_) => output.push(token),
                 Token::Float(_) => output.push(token),
-                Token::Op(c1) => {
+                /*Token::Op(c1) => {
                     while let Some(Token::Op(c2)) = ops.last() {
                         if self.precedence(c2) >= self.precedence(&c1) {
                             output.push(ops.pop().unwrap());
                         } else {
                             break;
+                        }
+                    }
+                    ops.push(Token::Op(c1));
+                }*/
+                Token::Op(c1) => {
+                    while let Some(top) = ops.last() {
+                        match top {
+                            Token::Op(c2) => {
+                                if self.precedence(c2) >= self.precedence(&c1) {
+                                    output.push(ops.pop().unwrap());
+                                } else {
+                                    break;
+                                }
+                            }
+                            Token::LParen => {
+                                break; // <- THIS IS MISSING in your implementation
+                            }
+                            _ => {
+                                break;
+                            }
                         }
                     }
                     ops.push(Token::Op(c1));
@@ -527,18 +550,33 @@ impl Parser {
                 Token::InputMacro => {
                     ops.push(token);
                 }
+                Token::Cast(_, _) => {
+                    //self.is_cast = true;
+                    output.push(token);
+                }
                 Token::FunctionCall(_, _) => output.push(token),
                 Token::CustomMacroCall(_, _) => output.push(token),
                 Token::Ident(var) => {
                     output.push(Token::Ident(var));
                 }
-                Token::LParen => ops.push(Token::LParen),
+                Token::LParen => {
+                    if self.is_cast {
+                        //output.push(Token::LParen);
+                    } else {
+                        ops.push(Token::LParen)
+                    }
+                }
                 Token::RParen => {
-                    while let Some(top) = ops.pop() {
-                        if let Token::LParen = top {
-                            break;
-                        } else {
-                            output.push(top);
+                    if self.is_cast {
+                        self.is_cast = false;
+                        //output.push(Token::RParen);
+                    } else {
+                        while let Some(top) = ops.pop() {
+                            if let Token::LParen = top {
+                                break;
+                            } else {
+                                output.push(top);
+                            }
                         }
                     }
                 }
@@ -613,6 +651,14 @@ impl Parser {
                         is_negate_minus: false,
                     })
                 }
+                Token::Cast(v, t) => {
+                    i += 1;
+
+                    stack.push(Expr::Cast {
+                        expr: Box::new(self.parse_cast_value(v)),
+                        target_type: self.parse_cast_type(t),
+                    });
+                }
                 Token::FunctionCall(name, token_body) => {
                     if !token_body.is_empty() {
                         if token_body[0] == Token::Fn {
@@ -638,11 +684,9 @@ impl Parser {
                     }
                 }
                 Token::CustomMacroCall(name, body) => {
-                    stack.push(Expr::FunctionCall {
+                    stack.push(Expr::CustomMacro {
                         name: name.to_string(),
                         args: self.parse_function_arguments(body, false),
-                        is_negate_minus: false,
-                        is_negate_not: false,
                     });
                     i += 1;
                 }
@@ -846,7 +890,9 @@ impl Parser {
                         _ => {}
                     }
                 }
-                _ => panic!("Unexpected token in RPN for AST"),
+                _ => {
+                    panic!("Unexpected token in RPN for AST: {:?}", rpn[i])
+                }
             }
         }
 
@@ -1007,7 +1053,7 @@ impl Parser {
         cond_tokens.first().unwrap().to_string()
     }
 
-    fn parse_condition_for_after(&mut self, iter: &mut Peekable<Iter<Token>>) -> Expr {
+    /*fn parse_condition_for_after(&mut self, iter: &mut Peekable<Iter<Token>>) -> Expr {
         let mut cond_tokens = Vec::new();
 
         for token in iter.by_ref() {
@@ -1020,6 +1066,111 @@ impl Parser {
 
         let temp_lexer = Lexer {
             tokens: cond_tokens,
+        };
+
+        self.to_rpn(temp_lexer);
+        self.build_ast();
+        self.ast_expr.clone()
+    }*/
+
+    fn parse_condition_for_after(&mut self, iter: &mut Peekable<Iter<Token>>) -> IterTarget {
+        let mut cond_tokens = Vec::new();
+
+        for token in iter.by_ref() {
+            match token {
+                Token::In => continue,
+                Token::LCurly => break,
+                _ => cond_tokens.push(token.clone()),
+            }
+        }
+
+        let mut sub_iter = cond_tokens.iter().peekable();
+
+        match sub_iter.peek() {
+            Some(Token::Number(_)) => {
+                // Numeric range case
+                let start = Box::new(self.parse_single_expr(&mut sub_iter));
+
+                match sub_iter.next() {
+                    Some(Token::Range) => {}
+                    other => panic!("Expected '..' in range, found {:?}", other),
+                }
+
+                let end = Box::new(self.parse_single_expr(&mut sub_iter));
+
+                let step = if let Some(Token::By) = sub_iter.peek() {
+                    sub_iter.next(); // Consume 'by'
+                    Some(Box::new(self.parse_single_expr(&mut sub_iter)))
+                } else {
+                    None
+                };
+
+                IterTarget::Range(RangeIter { start, end, step })
+            }
+            Some(Token::Ident(name)) => {
+                let v_type = self.variable_types.get(name).unwrap();
+                if v_type == &Type::Int {
+                    // Numeric range case
+                    let start = Box::new(self.parse_single_expr(&mut sub_iter));
+
+                    match sub_iter.next() {
+                        Some(Token::Range) => {}
+                        other => panic!("Expected '..' in range, found {:?}", other),
+                    }
+
+                    let end = Box::new(self.parse_single_expr(&mut sub_iter));
+
+                    let step = if let Some(Token::By) = sub_iter.peek() {
+                        sub_iter.next(); // Consume 'by'
+                        Some(Box::new(self.parse_single_expr(&mut sub_iter)))
+                    } else {
+                        None
+                    };
+
+                    IterTarget::Range(RangeIter { start, end, step })
+                } else {
+                    // Non-range iter expression (string, array, etc)
+                    let expr = {
+                        let temp_lexer = Lexer {
+                            tokens: cond_tokens.clone(),
+                        };
+                        self.to_rpn(temp_lexer);
+                        self.build_ast();
+                        Box::new(self.ast_expr.clone())
+                    };
+
+                    IterTarget::Expr(expr)
+                }
+            }
+            _ => {
+                // Non-range iter expression (string, array, etc)
+                let expr = {
+                    let temp_lexer = Lexer {
+                        tokens: cond_tokens.clone(),
+                    };
+                    self.to_rpn(temp_lexer);
+                    self.build_ast();
+                    Box::new(self.ast_expr.clone())
+                };
+
+                IterTarget::Expr(expr)
+            }
+        }
+    }
+
+    fn parse_single_expr(&mut self, iter: &mut Peekable<Iter<Token>>) -> Expr {
+        let mut expr_tokens = Vec::new();
+
+        while let Some(token) = iter.peek() {
+            match token {
+                Token::Range | Token::By | Token::LCurly => break,
+                _ => expr_tokens.push((token.to_owned()).clone()),
+            }
+            iter.next();
+        }
+
+        let temp_lexer = Lexer {
+            tokens: expr_tokens,
         };
 
         self.to_rpn(temp_lexer);
@@ -1092,6 +1243,72 @@ impl Parser {
         block
     }
 
+    #[allow(clippy::vec_box)]
+    fn parse_block_box(&mut self, iter: &mut Peekable<Iter<Token>>) -> Vec<Box<Expr>> {
+        let mut block = Vec::new();
+
+        let mut brace_depth = 0;
+        let mut expr_tokens = Vec::new();
+
+        while let Some(token) = iter.peek() {
+            if **token == Token::RCurly && brace_depth == 0 {
+                iter.next(); // consume `}`
+                break;
+            }
+
+            let token = iter.next().unwrap().clone();
+
+            match token {
+                Token::If => {
+                    let e = self.pre_parse_if(iter);
+                    expr_tokens.push(token);
+                    block.push(Box::new(e));
+                    expr_tokens.clear();
+                }
+                Token::While => {
+                    let e = self.pre_parse_while(iter);
+                    expr_tokens.push(token);
+                    block.push(Box::new(e));
+                    expr_tokens.clear();
+                }
+                Token::For => {
+                    let e = self.pre_parse_for(iter);
+                    expr_tokens.push(token);
+                    block.push(Box::new(e));
+                    expr_tokens.clear();
+                }
+                Token::LCurly => {
+                    brace_depth += 1;
+                    expr_tokens.push(token);
+                }
+                Token::RCurly => {
+                    brace_depth -= 1;
+                    expr_tokens.push(token);
+                    let temp_lexer = Lexer {
+                        tokens: expr_tokens.clone(),
+                    };
+                    let e = self.parse_expression(&temp_lexer);
+                    block.push(Box::new(e));
+                    expr_tokens.clear();
+                }
+                Token::Semicolon if brace_depth == 0 => {
+                    expr_tokens.push(token);
+                    let temp_lexer = Lexer {
+                        tokens: expr_tokens.clone(),
+                    };
+                    let e = self.parse_expression(&temp_lexer);
+                    block.push(Box::new(e));
+                    expr_tokens.clear();
+                }
+                _ => {
+                    expr_tokens.push(token);
+                }
+            }
+        }
+
+        block
+    }
+
     fn parse_if_expression(&mut self, iter: &mut Peekable<Iter<Token>>) -> Expr {
         // Accept both `if` and `elif` here
         match iter.next() {
@@ -1144,11 +1361,17 @@ impl Parser {
 
         let iter_start_name = self.parse_condition_for_init(iter); // Parse until `in`
         let to_iter_var = self.parse_condition_for_after(iter); // Parse until `{`
-        let body = self.parse_block(iter); // Parse `{ ... }`
+        let body = self.parse_block_box(iter); // Parse `{ ... }`
+
+        /*Expr::For {
+            iter_start_name,
+            to_iter_var: Box::new(to_iter_var),
+            body,
+        }*/
 
         Expr::For {
             iter_start_name,
-            to_iter_var: Box::new(to_iter_var),
+            iter_target: to_iter_var,
             body,
         }
     }
@@ -1183,6 +1406,7 @@ impl Parser {
 
     pub fn parse_let_expression(&mut self, tokens: &[Token]) -> Expr {
         let mut iter = tokens.iter().peekable();
+
         assert_eq!(iter.next(), Some(&Token::Let));
 
         let mutable = matches!(iter.clone().next(), Some(Token::Mut));
@@ -1360,7 +1584,7 @@ impl Parser {
             Expr::Value { value, .. } => value.clone(),
             Expr::VarDecl { value: v, .. } => self.match_type(v),
             Expr::FunctionCall { name, .. } => {
-                match self.functions.get(name).unwrap().return_type {
+                match &self.functions.get(name).unwrap().return_type {
                     Type::Int => Value::Int(0),
                     Type::Float => Value::Float(0.0),
                     Type::Bool => Value::Bool(false),
@@ -1381,6 +1605,13 @@ impl Parser {
                     Type::Null => Value::Null,
                 }
             }
+            Expr::Cast { target_type, .. } => match target_type {
+                Type::Int => Value::Int(0),
+                Type::Float => Value::Float(0.0),
+                Type::Bool => Value::Bool(false),
+                Type::Str => Value::Str("".to_string()),
+                Type::Null => Value::Null,
+            },
             Expr::InputMacro => Value::Str("".to_string()),
             _ => {
                 panic!("Matched type against nothing (internal error)")
@@ -1564,6 +1795,10 @@ impl Parser {
                     }
                 }
             }
+            Some(Token::CustomMacroCall(name, body)) => Expr::CustomMacro {
+                name: name.to_string(),
+                args: self.parse_function_arguments(body, false),
+            },
             Some(Token::FunctionCall(_, _)) => self.parse_function_call(tokens, false, false),
             Some(Token::OutputOp) => self.parse_return(tokens),
             Some(Token::PrintLn) => self.parse_println(tokens),
@@ -1597,6 +1832,109 @@ impl Parser {
 
         Expr::InputMacro
     }
+
+    pub fn parse_cast_value(&mut self, tokens: &[Token]) -> Expr {
+        let iter = tokens.iter().peekable();
+
+        let mut expr_tokens = Vec::new();
+
+        for token in iter {
+            match token {
+                Token::Comma => break,
+                _ => expr_tokens.push(token.clone()),
+            }
+        }
+
+        let expr_lexer = Lexer {
+            tokens: expr_tokens.to_vec(),
+        };
+        self.to_rpn(expr_lexer.clone());
+        self.build_ast();
+        self.ast_expr.clone()
+    }
+
+    pub fn parse_cast_type(&mut self, tokens: &[Token]) -> Type {
+        let iter = tokens.iter().peekable();
+
+        let mut expr_tokens = Vec::new();
+
+        for token in iter {
+            match token {
+                Token::RParen => break,
+                _ => expr_tokens.push(token.clone()),
+            }
+        }
+
+        match &expr_tokens[0] {
+            Token::Type(s) if s == "int" => Type::Int,
+            Token::Type(s) if s == "float" => Type::Float,
+            Token::Type(s) if s == "bool" => Type::Bool,
+            Token::Type(s) if s == "str" => Type::Str,
+            Token::Type(s) if s == "null" => Type::Null,
+            _ => panic!("Unknown type '{:?}'", expr_tokens[0]),
+        }
+    }
+
+    /*pub fn parse_cast(&mut self, tokens: &[Token]) -> Expr {
+        let mut iter = tokens.iter().peekable();
+
+        iter.next();
+
+        let mut inner_tokens = Vec::new();
+        let mut paren_depth = 1;
+
+        for token in iter {
+            match token {
+                Token::LParen => {
+                    paren_depth += 1;
+                    inner_tokens.push(token.clone());
+                }
+                Token::RParen => {
+                    paren_depth -= 1;
+                    if paren_depth == 0 {
+                        break;
+                    } else {
+                        inner_tokens.push(token.clone());
+                    }
+                }
+                _ => inner_tokens.push(token.clone()),
+            }
+        }
+
+        // Split at comma
+        let comma_index = inner_tokens
+            .iter()
+            .position(|t| *t == Token::Comma)
+            .expect("Expected ',' between expression and type");
+
+        let expr_tokens = &inner_tokens[0..comma_index];
+        let type_tokens = &inner_tokens[comma_index + 1..];
+
+        let expr_lexer = Lexer {
+            tokens: expr_tokens.to_vec(),
+        };
+        self.to_rpn(expr_lexer.clone());
+        self.build_ast();
+        let expr = self.ast_expr.clone();
+
+        if type_tokens.len() != 1 {
+            panic!("Expected single type identifier after ','");
+        }
+
+        let target_type = match &type_tokens[0] {
+            Token::Type(s) if s == "int" => Type::Int,
+            Token::Type(s) if s == "float" => Type::Float,
+            Token::Type(s) if s == "bool" => Type::Bool,
+            Token::Type(s) if s == "str" => Type::Str,
+            Token::Type(s) if s == "null" => Type::Null,
+            _ => panic!("Unknown type '{:?}'", type_tokens[0]),
+        };
+
+        Expr::Cast {
+            expr: Box::new(expr),
+            target_type,
+        }
+    }*/
 
     pub fn parse_println(&mut self, tokens: &[Token]) -> Expr {
         let mut iter = tokens.iter().peekable();
