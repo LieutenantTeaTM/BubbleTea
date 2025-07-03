@@ -1,0 +1,72 @@
+@!set_data <- "donut_utils.rs";
+@!print_screen <- "donut_utils.rs";
+@!clear_before_theta <- "donut_utils.rs";
+
+@!get_cos <- "donut_utils.rs";
+@!get_sin <- "donut_utils.rs";
+
+fn main() -> null {
+
+    v screen_width: int -> 80;
+    v screen_height: int -> 24;
+
+    v screen_width_f: float -> cast!(screen_width, float);
+    v screen_height_f: float -> cast!(screen_height, float);
+
+    v &a: float -> 0.0;
+    v &b: float -> 0.0;
+
+    while true {
+        clear_before_theta();
+        for theta in 0..628 by 7 {
+            for phi in 0..628 by 2 {
+                v &thetaf: float -> cast!(theta, float);
+                v &phif: float -> cast!(phi, float);
+
+                thetaf: thetaf / 100.0;
+                phif: phif / 100.0;
+
+                v sin_theta: float -> get_sin(thetaf);
+                v cos_theta: float -> get_cos(thetaf);
+                v sin_phi: float -> get_sin(phif);
+                v cos_phi: float -> get_cos(phif);
+
+                v sin_a: float -> get_sin(a);
+                v cos_a: float -> get_cos(a);
+                v sin_b: float -> get_sin(b);
+                v cos_b: float -> get_cos(b);
+
+                v circle_x: float -> cos_theta + 2.0;
+                v circle_y: float -> sin_theta;
+
+                v x: float -> circle_x * (cos_b * cos_phi + sin_a * sin_b * sin_phi)
+                        - circle_y * cos_a * sin_b;
+                v y: float -> circle_x * (sin_b * cos_phi - sin_a * cos_b * sin_phi)
+                        + circle_y * cos_a * cos_b;
+                v z: float -> 5.0 + cos_a * circle_x * sin_phi + circle_y * sin_a;
+                v ooz: float -> 1.0 / z;
+
+                v xp: float -> screen_width_f / 2.0 + 30.0 * ooz * x;
+                v yp: float -> screen_height_f / 2.0 - 15.0 * ooz * y;
+
+                v l1: float -> (cos_a * sin_theta - cos_theta * sin_a * sin_phi);
+                v l2: float -> (cos_phi * cos_theta * sin_b - cos_a * cos_theta * sin_phi - sin_a * sin_theta
+                            + cos_b * l1);
+                v luminance: float ->
+                        l2 * 8.0;
+                
+                if xp < screen_width_f && yp < screen_height_f {
+                    set_data(xp, yp, ooz, luminance);
+                }
+            }
+        }
+
+        print_screen();
+
+        a: a + 0.04;
+        b: b + 0.02;
+
+        zzz!(16);
+    }
+    
+}
