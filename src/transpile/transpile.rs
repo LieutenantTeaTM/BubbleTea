@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use crate::{
     SymbolTable,
-    general::ast::{Expr, ExternFunction, Type, Value},
+    general::ast::{Expr, ExternFunction, IterTarget, Type, Value},
 };
 
 pub struct Transpiler {
@@ -76,6 +76,19 @@ impl Transpiler {
         }
     }
 
+    fn precedence(&mut self, op: &str) -> usize {
+        match op {
+            "||" => 1,
+            "&&" => 2,
+            "::" | "!:" => 3,
+            ">" | "<" | ">:" | "<:" => 4,
+            "+" | "-" => 5,
+            "*" | "/" => 6,
+            "!" => 7,
+            _ => 0,
+        }
+    }
+
     pub fn transpile_expr(
         &mut self,
         expr: &Expr,
@@ -92,6 +105,16 @@ impl Transpiler {
                     }
                 } else {
                     panic!("Ident not found in symbol table, cancelling transpile")
+                }
+            }
+            Expr::Cast { expr, target_type } => {
+                let inner = self.transpile_expr(expr, false, symbols);
+                match target_type {
+                    Type::Int => format!("({} as i64)", inner),
+                    Type::Float => format!("({} as f64)", inner),
+                    Type::Bool => format!("({} as i64)", inner),
+                    Type::Str => format!("{}.to_string()", inner),
+                    Type::Null => "None".to_string(),
                 }
             }
             Expr::Value {
@@ -113,12 +136,22 @@ impl Transpiler {
                 let inner = self.transpile_expr(val, false, symbols);
                 format!("println!(\"{{:?}}\", {});", inner)
             }
-            Expr::InputMacro => "{
+            Expr::InputMacro => {
+                if is_statement {
+                    "{
+                let mut input = String::new();
+                std::io::stdin().read_line(&mut input).unwrap();
+            }"
+                    .to_string()
+                } else {
+                    "{
                 let mut input = String::new();
                 std::io::stdin().read_line(&mut input).unwrap();
                 input.trim().to_string()
             }"
-            .to_string(),
+                    .to_string()
+                }
+            }
             Expr::Sleep(duration_expr) => format!(
                 "std::thread::sleep(std::time::Duration::from_millis({} as u64));",
                 self.transpile_expr(duration_expr, true, symbols)
@@ -132,7 +165,7 @@ impl Transpiler {
                     .join("\n");
                 format!("while {} {{\n{}\n}}", cond, body_code)
             }
-            Expr::For {
+            /*Expr::For {
                 iter_start_name,
                 to_iter_var,
                 body,
@@ -147,7 +180,85 @@ impl Transpiler {
                     "for {} in 0..{} {{\n{}\n}}",
                     iter_start_name, to_var, body_code
                 )
-            }
+            }*/
+            Expr::For {
+                iter_start_name,
+                iter_target,
+                body,
+            } => match iter_target {
+                IterTarget::Range(range_iter) => {
+                    let to_var = self.transpile_expr(&range_iter.end, true, symbols);
+                    let t = match &*range_iter.end {
+                        Expr::Ident(name, _, _) => symbols.get(name).unwrap(),
+                        Expr::Value { value, .. } => &match value {
+                            Value::Int(_) => Type::Int,
+                            Value::Float(_) => Type::Float,
+                            Value::Bool(_) => Type::Bool,
+                            Value::Str(_) => Type::Str,
+                            Value::Null => Type::Null,
+                        },
+                        _ => {
+                            panic!("Invalid iter value")
+                        }
+                    };
+                    symbols.insert(iter_start_name.to_owned(), t.clone());
+                    let body_code = body
+                        .iter()
+                        .map(|e| self.transpile_expr(e, true, symbols))
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    let from_var = self.transpile_expr(&range_iter.start, true, symbols);
+
+                    if range_iter.step.is_some() {
+                        let step =
+                            self.transpile_expr(&range_iter.step.clone().unwrap(), true, symbols);
+                        format!(
+                            "for {} in ({}..{}).step_by({}) {{\n{}\n}}",
+                            iter_start_name, from_var, to_var, step, body_code
+                        )
+                    } else {
+                        format!(
+                            "for {} in {}..{} {{\n{}\n}}",
+                            iter_start_name, from_var, to_var, body_code
+                        )
+                    }
+                }
+                IterTarget::Expr(expr) => {
+                    let t = match &**expr {
+                        Expr::Ident(name, _, _) => symbols.get(name).unwrap().clone(),
+                        Expr::Value { value, .. } => match value {
+                            Value::Int(_) => Type::Int,
+                            Value::Float(_) => Type::Float,
+                            Value::Bool(_) => Type::Bool,
+                            Value::Str(_) => Type::Str,
+                            Value::Null => Type::Null,
+                        },
+                        _ => {
+                            panic!("Invalid iter value")
+                        }
+                    };
+                    symbols.insert(iter_start_name.to_owned(), t.clone());
+
+                    let to_var = self.transpile_expr(expr, true, symbols);
+                    let body_code = body
+                        .iter()
+                        .map(|e| self.transpile_expr(e, true, symbols))
+                        .collect::<Vec<_>>()
+                        .join("\n");
+
+                    match &t {
+                        Type::Str => {
+                            format!(
+                                "for {} in {}.chars() {{\n{}\n}}",
+                                iter_start_name, to_var, body_code
+                            )
+                        }
+                        _ => {
+                            panic!("Cannot iterate on invalid type")
+                        }
+                    }
+                }
+            },
             Expr::If {
                 condition,
                 body,
@@ -174,10 +285,10 @@ impl Transpiler {
                     .join("\n");
                 format!("{{\n{}\n}}", body_code)
             }
-            Expr::BinaryOp { op, left, right } => {
+            /*Expr::BinaryOp { op, left, right } => {
                 let mut op2 = op.to_owned();
                 if op2 == "::" {
-                    op2 = "==".to_owned();
+                    op2 = "::".to_owned();
                 } else if op2 == "!:" {
                     op2 = "!=".to_owned();
                 } else if op2 == ">:" {
@@ -195,6 +306,35 @@ impl Transpiler {
                     }
                 }
                 format!("{} {} {}", l, op2, r)
+            }*/
+            Expr::BinaryOp { op, left, right } => {
+                let op_prec = self.precedence(op);
+
+                let l_str = match **left {
+                    Expr::BinaryOp { op: ref lop, .. } if self.precedence(lop) < op_prec => {
+                        format!("({})", self.transpile_expr(left, false, symbols))
+                    }
+                    _ => self.transpile_expr(left, false, symbols),
+                };
+
+                let r_str = match **right {
+                    Expr::BinaryOp { op: ref rop, .. } if self.precedence(rop) < op_prec => {
+                        format!("({})", self.transpile_expr(right, false, symbols))
+                    }
+                    _ => self.transpile_expr(right, false, symbols),
+                };
+
+                let mut op2 = op.to_owned();
+                if op == "::" {
+                    op2 = "==".to_owned();
+                } else if op == "!:" {
+                    op2 = "!=".to_owned();
+                } else if op == ">:" {
+                    op2 = ">=".to_owned();
+                } else if op == "<:" {
+                    op2 = "<=".to_owned();
+                }
+                format!("{} {} {}", l_str, op2, r_str)
             }
             Expr::VarUpdate { var, new_value } => {
                 format!(
@@ -269,6 +409,7 @@ impl Transpiler {
                 if *is_negate_minus {
                     args_code = format!("-({})", args_code);
                 }
+
                 let call_code = format!("{}({})", name, args_code);
 
                 if is_statement {
