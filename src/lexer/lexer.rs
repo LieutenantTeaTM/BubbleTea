@@ -11,6 +11,10 @@ pub enum Token {
     Type(String),
     CustomMacroCall(String, Vec<Token>),
     MacroDefine,
+    Range,
+    LBracket,
+    RBracket,
+    By,
     Ref,
     While,
     For,
@@ -22,6 +26,7 @@ pub enum Token {
     UnaryMinus,
     PrintLn,
     PrintSingle,
+    Cast(Vec<Token>, Vec<Token>),
     SuperPrint,
     InputMacro,
     Comma,
@@ -43,6 +48,8 @@ pub enum Token {
 impl ToString for Token {
     fn to_string(&self) -> String {
         match self {
+            Token::LBracket => "[".to_string(),
+            Token::RBracket => "]".to_string(),
             Token::MacroDefine => "@!".to_string(),
             Token::CustomMacroCall(name, args) => {
                 let args_str = args
@@ -60,10 +67,25 @@ impl ToString for Token {
                     .join(" ");
                 format!("{}({})", name, args_str)
             }
+            Token::Range => "..".to_string(),
+            Token::By => "by".to_string(),
             Token::Sleep => "zzz!".to_string(),
             Token::InputMacro => "inp!()".to_string(),
             Token::PrintSingle => "ps!".to_string(),
             Token::SuperPrint => "sp!".to_string(),
+            Token::Cast(v, t) => {
+                let value_str = v
+                    .iter()
+                    .map(|v2| v2.to_string())
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                let type_str = t
+                    .iter()
+                    .map(|t2| t2.to_string())
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                format!("cast!({}, {})", value_str, type_str)
+            }
             Token::For => "for".to_string(),
             Token::In => "in".to_string(),
             Token::While => "while".to_string(),
@@ -123,33 +145,58 @@ impl Lexer {
             if c.is_whitespace() {
                 chars.next();
             } else if c.is_ascii_digit() || c == '.' {
-                num.clear();
-                let mut has_dot = c == '.';
-
-                if has_dot {
-                    num.push('.');
+                if c == '.' && chars.peek() == Some(&'.') {
+                    tokens.push(Token::Range);
                     chars.next();
-                }
-
-                while let Some(&d) = chars.peek() {
-                    if d.is_ascii_digit() {
-                        num.push(d);
-                        chars.next();
-                    } else if d == '.' && !has_dot {
-                        has_dot = true;
-                        num.push(d);
-                        chars.next();
-                    } else {
-                        break;
-                    }
-                }
-
-                if has_dot {
-                    let value = num.parse::<f64>().unwrap();
-                    tokens.push(Token::Float(value));
+                    chars.next();
                 } else {
-                    let value = num.parse::<i64>().unwrap();
-                    tokens.push(Token::Number(value));
+                    num.clear();
+                    let mut has_dot = c == '.' && chars.peek() != Some(&'.');
+
+                    if has_dot {
+                        num.push('.');
+                        chars.next();
+                    }
+
+                    /*while let Some(&d) = chars.peek() {
+                        if d.is_ascii_digit() {
+                            num.push(d);
+                            chars.next();
+                        } else if d == '.' && !has_dot && chars.peek() != Some(&'.') {
+                            has_dot = true;
+                            num.push(d);
+                            chars.next();
+                        } else {
+                            break;
+                        }
+                    }*/
+
+                    while let Some(&d) = chars.peek() {
+                        if d.is_ascii_digit() {
+                            num.push(d);
+                            chars.next();
+                        } else if d == '.' && !has_dot {
+                            let mut iter = chars.clone();
+                            iter.next();
+                            if iter.peek() == Some(&'.') {
+                                break; // it's a range, stop parsing the number
+                            }
+
+                            has_dot = true;
+                            num.push(d);
+                            chars.next();
+                        } else {
+                            break;
+                        }
+                    }
+
+                    if has_dot {
+                        let value = num.parse::<f64>().unwrap();
+                        tokens.push(Token::Float(value));
+                    } else {
+                        let value = num.parse::<i64>().unwrap();
+                        tokens.push(Token::Number(value));
+                    }
                 }
             } else if c == '<' {
                 chars.next();
@@ -348,6 +395,9 @@ impl Lexer {
                             }
                         }
                     }
+                    "by" => {
+                        tokens.push(Token::By);
+                    }
                     "ps" => {
                         if let Some(&'!') = chars.peek() {
                             chars.next();
@@ -358,6 +408,52 @@ impl Lexer {
                         if let Some(&'!') = chars.peek() {
                             chars.next();
                             tokens.push(Token::SuperPrint);
+                        }
+                    }
+                    "cast" => {
+                        if let Some(&'!') = chars.peek() {
+                            chars.next();
+                            if let Some(&'(') = chars.peek() {
+                                chars.next();
+
+                                let mut temp_value = String::new();
+                                let mut paren_depth = 0;
+
+                                for ch in chars.by_ref() {
+                                    match ch {
+                                        '(' => {
+                                            paren_depth += 1;
+                                            temp_value.push(ch);
+                                        }
+                                        ')' if paren_depth > 0 => {
+                                            paren_depth -= 1;
+                                            temp_value.push(ch);
+                                        }
+                                        ',' if paren_depth == 0 => {
+                                            break;
+                                        }
+                                        _ => temp_value.push(ch),
+                                    }
+                                }
+
+                                let mut val_lexer = Lexer { tokens: vec![] };
+                                val_lexer.tokenize(&temp_value);
+
+                                let mut temp_type = String::new();
+
+                                for ch in chars.by_ref() {
+                                    match ch {
+                                        ')' => {
+                                            break;
+                                        }
+                                        _ => temp_type.push(ch),
+                                    }
+                                }
+
+                                let mut type_lexer = Lexer { tokens: vec![] };
+                                type_lexer.tokenize(&temp_type);
+                                tokens.push(Token::Cast(val_lexer.tokens, type_lexer.tokens));
+                            }
                         }
                     }
                     "zzz" => {
@@ -473,6 +569,8 @@ impl Lexer {
                     "," => tokens.push(Token::Comma),
                     "(" => tokens.push(Token::LParen),
                     ")" => tokens.push(Token::RParen),
+                    "[" => tokens.push(Token::LBracket),
+                    "]" => tokens.push(Token::RBracket),
                     ":" => tokens.push(Token::Colon),
                     ";" => tokens.push(Token::Semicolon),
                     "&" => tokens.push(Token::Mut),
